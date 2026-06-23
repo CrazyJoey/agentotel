@@ -1,0 +1,30 @@
+[Unit]
+Description=AgentOTel OpenTelemetry Collector
+Documentation=https://github.com/CrazyJoey/agentotel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/workspace/agentotel
+ExecStart=/home/admin/workspace/agentotel/bin/agentotel-collector --config /home/admin/workspace/agentotel/opentelemetry-collector/config/agentotel-local.yaml
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+# Keep runtime deterministic and avoid leaking secrets into the unit.
+Environment=GOMEMLIMIT=512MiB
+Environment=GOPROXY=https://goproxy.cn,direct
+
+# Basic hardening. Keep write access to workspace for logs/temp if needed by future components.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/admin/workspace/agentotel
+
+[Install]
+WantedBy=multi-user.target
