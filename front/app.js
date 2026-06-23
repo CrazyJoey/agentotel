@@ -363,6 +363,16 @@ function debounce(fn, delay = 250) {
   };
 }
 
+class ApiError extends Error {
+  constructor(status, detail, payload = null) {
+    super(detail || `HTTP ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail || "";
+    this.payload = payload;
+  }
+}
+
 async function fetchJson(url, options = {}) {
   const headers = new Headers(options.headers || {});
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -371,9 +381,14 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options, headers });
   if (!response.ok) {
     let detail = "";
-    try { const payload = await response.json(); detail = payload.detail || payload.error || ""; }
-    catch (_) { detail = await response.text().catch(() => ""); }
-    throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    let payload = null;
+    try {
+      payload = await response.json();
+      detail = payload.message || payload.detail || payload.error || "";
+    } catch (_) {
+      detail = await response.text().catch(() => "");
+    }
+    throw new ApiError(response.status, detail, payload);
   }
   return response.json();
 }
@@ -642,6 +657,23 @@ function authMessage(text = "", type = "") {
   el.textContent = text;
   el.className = `auth-message ${type}`.trim();
 }
+function authErrorMessage(error, fallback = "操作失败，请稍后重试") {
+  const detail = error instanceof ApiError ? String(error.detail || "") : (error instanceof Error ? error.message : String(error || ""));
+  if (detail === "invalid_code") return "验证码不正确，请重新输入";
+  if (detail === "code_expired") return "验证码已过期，请重新获取";
+  if (detail === "too_many_code_attempts") return "验证码错误次数过多，请重新获取";
+  if (detail === "phone_code_resend_limited") return "验证码发送太频繁，请稍后再试";
+  if (detail === "phone_daily_limited" || detail === "phone_code_daily_limited") return "今日验证码次数已达上限";
+  if (detail === "ip_hourly_limited" || detail === "ip_code_hourly_limited") return "请求过于频繁，请稍后再试";
+  if (detail === "invalid_phone") return "请输入正确的手机号";
+  if (error instanceof ApiError && error.status >= 500) return "服务暂时不可用，请稍后再试";
+  if (detail && !/^HTTP\s+\d+/i.test(detail)) return detail;
+  return fallback;
+}
+function setAuthFieldError(fieldId, hasError = true) {
+  const field = $(fieldId);
+  field?.classList.toggle("field-error", Boolean(hasError));
+}
 function setAuthenticatedShell(isAuthenticated) {
   const auth = $("auth-page");
   const shell = document.querySelector(".app-shell");
@@ -650,7 +682,9 @@ function setAuthenticatedShell(isAuthenticated) {
 }
 async function sendPhoneCode() {
   const phone = $("phone-input")?.value?.trim();
-  if (!phone) { authMessage("请输入手机号", "error"); return; }
+  if (!phone) { authMessage("请输入手机号", "error"); setAuthFieldError("phone-input", true); return; }
+  setAuthFieldError("phone-input", false);
+  setAuthFieldError("phone-code-input", false);
   authMessage("正在发送…");
   await fetchJson(API.phoneCode(), jsonPost({ phone }));
   authMessage("验证码已发送", "ok");
@@ -658,17 +692,30 @@ async function sendPhoneCode() {
 async function phoneLogin() {
   const phone = $("phone-input")?.value?.trim();
   const code = $("phone-code-input")?.value?.trim();
-  if (!phone || !code) { authMessage("请输入手机号和验证码", "error"); return; }
+  setAuthFieldError("phone-input", false);
+  setAuthFieldError("phone-code-input", false);
+  if (!phone || !code) {
+    if (!phone) setAuthFieldError("phone-input", true);
+    if (!code) setAuthFieldError("phone-code-input", true);
+    authMessage("请输入手机号和验证码", "error");
+    return;
+  }
   authMessage("正在登录…");
-  const payload = await fetchJson(API.phoneLogin(), jsonPost({ phone, code }));
-  const token = pick(payload.token, payload.access_token, payload.jwt, payload.data?.token, payload.data?.access_token);
-  const projectId = pick(payload.current_project_id, payload.project_id, payload.default_project_id, payload.data?.current_project_id, payload.data?.project_id);
-  if (!token) throw new Error("登录成功但未返回 token");
-  localStorage.setItem(STORAGE.token, token);
-  if (projectId) localStorage.setItem(STORAGE.projectId, String(projectId));
-  state.currentProjectId = localStorage.getItem(STORAGE.projectId) || "";
-  setAuthenticatedShell(true);
-  await bootstrapAuthenticatedApp();
+  try {
+    const payload = await fetchJson(API.phoneLogin(), jsonPost({ phone, code }));
+    const token = pick(payload.token, payload.access_token, payload.jwt, payload.data?.token, payload.data?.access_token);
+    const projectId = pick(payload.current_project_id, payload.project_id, payload.default_project_id, payload.data?.current_project_id, payload.data?.project_id);
+    if (!token) throw new Error("登录成功但未返回 token");
+    localStorage.setItem(STORAGE.token, token);
+    if (projectId) localStorage.setItem(STORAGE.projectId, String(projectId));
+    state.currentProjectId = localStorage.getItem(STORAGE.projectId) || "";
+    setAuthenticatedShell(true);
+    await bootstrapAuthenticatedApp();
+  } catch (error) {
+    const detail = error instanceof ApiError ? error.detail : "";
+    if (["invalid_code", "code_expired", "too_many_code_attempts"].includes(detail)) setAuthFieldError("phone-code-input", true);
+    throw error;
+  }
 }
 async function loadProjects() {
   const payload = await fetchJson(API.projects());
@@ -2308,10 +2355,10 @@ function integrationCopyValue(targetId) {
 
 function bindEvents() {
   $("send-phone-code")?.addEventListener("click", async () => {
-    try { await sendPhoneCode(); } catch (error) { authMessage(error instanceof Error ? error.message : String(error), "error"); }
+    try { await sendPhoneCode(); } catch (error) { authMessage(authErrorMessage(error, "验证码发送失败，请稍后重试"), "error"); }
   });
   $("phone-login-button")?.addEventListener("click", async () => {
-    try { await phoneLogin(); } catch (error) { authMessage(error instanceof Error ? error.message : String(error), "error"); }
+    try { await phoneLogin(); } catch (error) { authMessage(authErrorMessage(error, "登录失败，请稍后重试"), "error"); }
   });
   $("logout-button")?.addEventListener("click", logout);
   $("agent-menu-trigger")?.addEventListener("click", (event) => {

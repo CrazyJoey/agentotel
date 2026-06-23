@@ -16,8 +16,8 @@ processors:
 exporters:
   agentotelclickhouse:
     endpoint: http://127.0.0.1:8123
-    database: agent_observability
-    project_id: default
+    database: agentotel_project_proj_c9a73efa88944295
+    project_id: proj_c9a73efa88944295
     environment: default
   debug:
     verbosity: basic

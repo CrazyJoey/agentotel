@@ -764,13 +764,21 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .waterfall-bar.error { background: var(--red); }
 .waterfall-duration { color: #cfd4df; font-family: var(--mono); font-size: 10px; text-align: right; }
 .waterfall-preview { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; padding-left: 22px; }
-.trace-span-detail { padding: 12px; max-height: 520px; overflow: auto; }
+.trace-span-detail {
+  position: sticky;
+  top: 2px;
+  align-self: start;
+  padding: 12px;
+  max-height: calc(100vh - 22px);
+  overflow: auto;
+}
 .span-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .span-detail-head h4 { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
 .span-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .span-previews { margin-top: 10px; }
 @media (max-width: 1180px) {
   .trace-waterfall-layout { grid-template-columns: 1fr; }
+  .trace-span-detail { position: static; max-height: 520px; }
   .waterfall-axis { margin-left: 210px; }
 }
 
@@ -1474,6 +1482,11 @@ details summary { cursor: pointer; }
   padding: 12px 13px;
 }
 .auth-field input:focus { border-color: rgba(113,112,255,.62); box-shadow: 0 0 0 3px rgba(113,112,255,.12); }
+.auth-field input.field-error {
+  border-color: rgba(248,113,113,.72);
+  background: rgba(248,113,113,.055);
+  box-shadow: 0 0 0 3px rgba(248,113,113,.1);
+}
 .auth-code-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .auth-code-row .button { height: 43px; white-space: nowrap; }
 .auth-submit { width: 100%; justify-content: center; height: 44px; margin-top: 2px; }

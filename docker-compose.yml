@@ -23,6 +23,11 @@ services:
       CLICKHOUSE_URL: http://clickhouse:8123/?database=agent_observability
       PROJECT_ID: default
       ENVIRONMENT: default
+      MYSQL_HOST: ${MYSQL_HOST:?set MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_DB: ${MYSQL_DB:-agentotel_meta}
     depends_on:
       clickhouse:
         condition: service_healthy

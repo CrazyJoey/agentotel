@@ -25,6 +25,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
+
+try:
+    import pymysql
+except ImportError:  # pragma: no cover - dependency is installed in deployment
+    pymysql = None
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -34,6 +39,11 @@ CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", f"http://127.0.0.1:8123/?database={
 PROJECT_ID = os.getenv("PROJECT_ID", "default")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "default")
 META_DB = os.getenv("META_DB", "agentotel_meta")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "agentotel")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DB = os.getenv("MYSQL_DB", META_DB)
 JWT_SECRET = os.getenv("JWT_SECRET", "agentotel-dev-secret-change-me")
 SECRET_PEPPER = os.getenv("SECRET_PEPPER", JWT_SECRET)
 SMS_PROVIDER = os.getenv("SMS_PROVIDER", "console")
@@ -458,6 +468,65 @@ def ch_query_json(query: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+def mysql_conn(database: str | None = None):
+    if pymysql is None:
+        raise RuntimeError("pymysql_not_installed")
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=database or MYSQL_DB,
+        charset="utf8mb4",
+        autocommit=True,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+def normalize_meta_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = {}
+    for key, value in row.items():
+        if isinstance(value, datetime):
+            normalized[key] = value.strftime("%Y-%m-%d %H:%M:%S.%f")[:23]
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def meta_query(sql: str, args: tuple[Any, ...] | list[Any] = ()) -> list[dict[str, Any]]:
+    with mysql_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            return [normalize_meta_row(row) for row in cur.fetchall()]
+
+
+def meta_execute(sql: str, args: tuple[Any, ...] | list[Any] = ()) -> int:
+    with mysql_conn() as conn:
+        with conn.cursor() as cur:
+            return cur.execute(sql, args)
+
+
+def meta_insert(table: str, columns: list[str], row: dict[str, Any]) -> None:
+    placeholders = ",".join(["%s"] * len(columns))
+    names = ",".join(f"`{col}`" for col in columns)
+    values = [row.get(col) for col in columns]
+    meta_execute(f"INSERT INTO `{table}` ({names}) VALUES ({placeholders})", values)
+
+
+def qid(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", value):
+        raise ValueError("invalid_identifier")
+    return "`" + value + "`"
+
+
+def init_mysql_database() -> None:
+    if pymysql is None:
+        raise RuntimeError("pymysql_not_installed")
+    with pymysql.connect(host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER, password=MYSQL_PASSWORD, charset="utf8mb4", autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE DATABASE IF NOT EXISTS {qid(MYSQL_DB)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+
+
 _TIME_RE = re.compile(r"^[0-9TtZz:\-+. ]+$")
 
 
@@ -500,8 +569,14 @@ def send_aliyun_sms_code(phone_number: str, code: str, purpose: str = "login") -
     digest = hmac.new((ALIYUN_SMS_ACCESS_KEY_SECRET + "&").encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1).digest()
     params["Signature"] = base64.b64encode(digest).decode("ascii")
     query = urllib.parse.urlencode(params)
-    with urllib.request.urlopen(ALIYUN_SMS_ENDPOINT + "?" + query, timeout=10) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(ALIYUN_SMS_ENDPOINT + "?" + query, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"aliyun_sms_http_{exc.code}:{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"aliyun_sms_connection_failed:{exc}") from exc
     if result.get("Code") != "OK":
         raise RuntimeError("aliyun_sms_failed:" + stringify(result.get("Code") or result.get("Message") or result))
 
@@ -570,12 +645,6 @@ def verify_jwt(auth_header: str | None) -> dict[str, Any]:
     return payload
 
 
-def qid(value: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_]+", value):
-        raise ValueError("invalid_identifier")
-    return "`" + value + "`"
-
-
 def create_project_tables(database: str) -> None:
     ch_post(f"CREATE DATABASE IF NOT EXISTS {qid(database)}")
     with project_database(database):
@@ -612,39 +681,81 @@ def create_project_tables(database: str) -> None:
 
 
 def init_meta_schema() -> None:
-    ch_post(f"CREATE DATABASE IF NOT EXISTS {qid(META_DB)}")
-    ch_post(f"""
-    CREATE TABLE IF NOT EXISTS {META_DB}.users (
-      user_id String, phone_country_code String, phone_number String, phone_normalized String, display_name String DEFAULT '', status LowCardinality(String) DEFAULT 'active',
-      last_login_at Nullable(DateTime64(3, 'UTC')), created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY user_id
+    init_mysql_database()
+    meta_execute("""
+    CREATE TABLE IF NOT EXISTS users (
+      user_id VARCHAR(80) PRIMARY KEY,
+      phone_country_code VARCHAR(16) NOT NULL,
+      phone_number VARCHAR(32) NOT NULL,
+      phone_normalized VARCHAR(32) NOT NULL,
+      display_name VARCHAR(120) NOT NULL DEFAULT '',
+      status VARCHAR(24) NOT NULL DEFAULT 'active',
+      last_login_at DATETIME(3) NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      KEY idx_users_phone (phone_normalized, status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    ch_post(f"""
-    CREATE TABLE IF NOT EXISTS {META_DB}.phone_login_codes (
-      code_id String, phone_normalized String, code_hash String, status LowCardinality(String) DEFAULT 'active', expires_at DateTime64(3, 'UTC'),
-      consumed_at Nullable(DateTime64(3, 'UTC')), request_ip String DEFAULT '', user_agent String DEFAULT '', attempt_count UInt32 DEFAULT 0,
-      created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY (phone_normalized, code_id)
+    meta_execute("""
+    CREATE TABLE IF NOT EXISTS phone_login_codes (
+      code_id VARCHAR(80) PRIMARY KEY,
+      phone_normalized VARCHAR(32) NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'active',
+      expires_at DATETIME(3) NOT NULL,
+      consumed_at DATETIME(3) NULL,
+      request_ip VARCHAR(64) NOT NULL DEFAULT '',
+      user_agent VARCHAR(512) NOT NULL DEFAULT '',
+      attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      KEY idx_codes_phone (phone_normalized, status, created_at),
+      KEY idx_codes_ip (request_ip, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    ch_post(f"""
-    CREATE TABLE IF NOT EXISTS {META_DB}.projects (
-      project_id String, owner_user_id String, name String, slug String, ck_database String, status LowCardinality(String) DEFAULT 'active',
-      created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY project_id
+    meta_execute("""
+    CREATE TABLE IF NOT EXISTS projects (
+      project_id VARCHAR(80) PRIMARY KEY,
+      owner_user_id VARCHAR(80) NOT NULL,
+      name VARCHAR(160) NOT NULL,
+      slug VARCHAR(120) NOT NULL,
+      ck_database VARCHAR(160) NOT NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'active',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      KEY idx_projects_owner (owner_user_id, status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    ch_post(f"""
-    CREATE TABLE IF NOT EXISTS {META_DB}.project_api_keys (
-      api_key_id String, project_id String, agent_id String DEFAULT '', name String, key_prefix String, key_hash String, status LowCardinality(String) DEFAULT 'active',
-      created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3), last_used_at Nullable(DateTime64(3, 'UTC'))
-    ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY (project_id, api_key_id)
+    meta_execute("""
+    CREATE TABLE IF NOT EXISTS project_agents (
+      agent_id VARCHAR(80) PRIMARY KEY,
+      project_id VARCHAR(80) NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      slug VARCHAR(120) NOT NULL,
+      kind VARCHAR(40) NOT NULL DEFAULT 'custom',
+      status VARCHAR(24) NOT NULL DEFAULT 'active',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      UNIQUE KEY uniq_project_agent_name (project_id, name, status),
+      KEY idx_agents_project (project_id, status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys ADD COLUMN IF NOT EXISTS agent_id String DEFAULT '' AFTER project_id")
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys ADD COLUMN IF NOT EXISTS key_plaintext String DEFAULT '' AFTER key_hash")
-    ch_post(f"""
-    CREATE TABLE IF NOT EXISTS {META_DB}.project_agents (
-      agent_id String, project_id String, name String, slug String, kind String DEFAULT 'custom', status LowCardinality(String) DEFAULT 'active',
-      created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY (project_id, agent_id)
+    meta_execute("""
+    CREATE TABLE IF NOT EXISTS project_api_keys (
+      api_key_id VARCHAR(80) PRIMARY KEY,
+      project_id VARCHAR(80) NOT NULL,
+      agent_id VARCHAR(80) NOT NULL DEFAULT '',
+      name VARCHAR(160) NOT NULL,
+      key_prefix VARCHAR(32) NOT NULL,
+      key_hash CHAR(64) NOT NULL,
+      key_plaintext VARCHAR(256) NOT NULL DEFAULT '',
+      status VARCHAR(24) NOT NULL DEFAULT 'active',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      last_used_at DATETIME(3) NULL,
+      KEY idx_keys_lookup (key_prefix, key_hash, status, updated_at),
+      KEY idx_keys_project_agent (project_id, agent_id, status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
 
 
@@ -652,12 +763,12 @@ def create_api_key(project_id: str, name: str = "默认接入 Key", agent_id: st
     api_key_id = "key_" + uuid.uuid4().hex
     key = API_KEY_PREFIX + secrets.token_urlsafe(32)
     row = {"api_key_id": api_key_id, "project_id": project_id, "agent_id": agent_id, "name": name, "key_prefix": api_key_prefix(key), "key_hash": hash_secret(key), "key_plaintext": key, "status": "active"}
-    insert_json_each_row(f"{META_DB}.project_api_keys", ["api_key_id", "project_id", "agent_id", "name", "key_prefix", "key_hash", "key_plaintext", "status"], [row])
+    meta_insert("project_api_keys", ["api_key_id", "project_id", "agent_id", "name", "key_prefix", "key_hash", "key_plaintext", "status"], row)
     return {"api_key_id": api_key_id, "project_id": project_id, "agent_id": agent_id, "name": name, "key_prefix": row["key_prefix"], "api_key": key}
 
 
 def regenerate_api_key(project_id: str, name: str = "默认接入 Key") -> dict[str, str]:
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys UPDATE status='revoked' WHERE project_id={sql_quote(project_id)} AND status='active' AND agent_id=''")
+    meta_execute("UPDATE project_api_keys SET status='revoked' WHERE project_id=%s AND status='active' AND agent_id=''", (project_id,))
     return create_api_key(project_id, name)
 
 
@@ -665,7 +776,7 @@ def regenerate_agent_api_key(project_id: str, agent_id: str, name: str = "Agent 
     agent = agent_for_project(project_id, agent_id)
     if not agent:
         raise FileNotFoundError("agent_not_found")
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys UPDATE status='revoked' WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} AND status='active' SETTINGS mutations_sync=1")
+    meta_execute("UPDATE project_api_keys SET status='revoked' WHERE project_id=%s AND agent_id=%s AND status='active'", (project_id, agent_id))
     return create_api_key(project_id, name or f"{stringify(agent.get('name')) or 'Agent'} 接入 Key", agent_id=agent_id)
 
 
@@ -674,7 +785,7 @@ def create_project(owner_user_id: str, name: str = "默认项目") -> dict[str, 
     slug = "default" if name == "默认项目" else re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64] or "project"
     ck_database = "agentotel_project_" + project_id
     row = {"project_id": project_id, "owner_user_id": owner_user_id, "name": name, "slug": slug, "ck_database": ck_database, "status": "active"}
-    insert_json_each_row(f"{META_DB}.projects", ["project_id", "owner_user_id", "name", "slug", "ck_database", "status"], [row])
+    meta_insert("projects", ["project_id", "owner_user_id", "name", "slug", "ck_database", "status"], row)
     create_project_tables(ck_database)
     key = create_api_key(project_id)
     default_agent = create_agent(project_id, "default", "default")
@@ -717,7 +828,7 @@ def agent_name_condition(agent_name: str | None, column: str = "agent_name", pre
 
 
 def active_agent_rows(project_id: str) -> list[dict[str, Any]]:
-    return ch_query_json(f"SELECT * FROM {META_DB}.project_agents WHERE project_id={sql_quote(project_id)} AND status='active' ORDER BY created_at ASC")
+    return meta_query("SELECT * FROM project_agents WHERE project_id=%s AND status='active' ORDER BY created_at ASC", (project_id,))
 
 
 def ensure_default_agent(project_id: str) -> dict[str, Any]:
@@ -730,8 +841,8 @@ def ensure_default_agent(project_id: str) -> dict[str, Any]:
     else:
         agent_id = "agent_" + uuid.uuid4().hex[:16]
         agent = {"agent_id": agent_id, "project_id": project_id, "name": "default", "slug": "default", "kind": "default", "status": "active"}
-        insert_json_each_row(f"{META_DB}.project_agents", ["agent_id", "project_id", "name", "slug", "kind", "status"], [agent])
-    key_rows = ch_query_json(f"SELECT api_key_id FROM {META_DB}.project_api_keys WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(stringify(agent.get('agent_id')))} AND status='active' ORDER BY created_at DESC LIMIT 1")
+        meta_insert("project_agents", ["agent_id", "project_id", "name", "slug", "kind", "status"], agent)
+    key_rows = meta_query("SELECT api_key_id FROM project_api_keys WHERE project_id=%s AND agent_id=%s AND status='active' ORDER BY created_at DESC LIMIT 1", (project_id, stringify(agent.get('agent_id'))))
     if not key_rows:
         create_api_key(project_id, f"{stringify(agent.get('name')) or 'default'} 接入 Key", agent_id=stringify(agent.get("agent_id")))
     return agent
@@ -743,11 +854,12 @@ def list_agents(project_id: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for agent in agents:
         agent_id = stringify(agent.get("agent_id"))
-        rows = ch_query_json(
-            f"SELECT api_key_id, project_id, agent_id, name, key_prefix, key_plaintext AS api_key, status, created_at, updated_at, last_used_at "
-            f"FROM {META_DB}.project_api_keys "
-            f"WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} AND status='active' "
-            f"ORDER BY created_at DESC LIMIT 1"
+        rows = meta_query(
+            "SELECT api_key_id, project_id, agent_id, name, key_prefix, key_plaintext AS api_key, status, created_at, updated_at, last_used_at "
+            "FROM project_api_keys "
+            "WHERE project_id=%s AND agent_id=%s AND status='active' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (project_id, agent_id),
         )
         key = rows[0] if rows else None
         if not key or not stringify(key.get("api_key")):
@@ -762,13 +874,13 @@ def create_agent(project_id: str, name: str, kind: str = "custom") -> dict[str, 
     clean_name = (name or "").strip()[:80]
     if not clean_name:
         raise ValueError("agent_name_required")
-    dup = ch_query_json(f"SELECT agent_id FROM {META_DB}.project_agents WHERE project_id={sql_quote(project_id)} AND name={sql_quote(clean_name)} AND status='active' LIMIT 1")
+    dup = meta_query("SELECT agent_id FROM project_agents WHERE project_id=%s AND name=%s AND status='active' LIMIT 1", (project_id, clean_name))
     if dup:
         raise ValueError("agent_name_exists")
     agent_id = "agent_" + uuid.uuid4().hex[:16]
     slug = _agent_slug(clean_name, agent_id)
     row = {"agent_id": agent_id, "project_id": project_id, "name": clean_name, "slug": slug, "kind": (kind or "custom")[:40], "status": "active"}
-    insert_json_each_row(f"{META_DB}.project_agents", ["agent_id", "project_id", "name", "slug", "kind", "status"], [row])
+    meta_insert("project_agents", ["agent_id", "project_id", "name", "slug", "kind", "status"], row)
     key = create_api_key(project_id, f"{clean_name} 接入 Key", agent_id=agent_id)
     return public_agent(row, key)
 
@@ -780,10 +892,10 @@ def rename_agent(project_id: str, agent_id: str, name: str) -> dict[str, Any]:
     agent = agent_for_project(project_id, agent_id)
     if not agent:
         raise FileNotFoundError("agent_not_found")
-    dup = ch_query_json(f"SELECT agent_id FROM {META_DB}.project_agents WHERE project_id={sql_quote(project_id)} AND name={sql_quote(clean_name)} AND status='active' AND agent_id!={sql_quote(agent_id)} LIMIT 1")
+    dup = meta_query("SELECT agent_id FROM project_agents WHERE project_id=%s AND name=%s AND status='active' AND agent_id!=%s LIMIT 1", (project_id, clean_name, agent_id))
     if dup:
         raise ValueError("agent_name_exists")
-    ch_post(f"ALTER TABLE {META_DB}.project_agents UPDATE name={sql_quote(clean_name)}, slug={sql_quote(_agent_slug(clean_name, agent_id))} WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} SETTINGS mutations_sync=1")
+    meta_execute("UPDATE project_agents SET name=%s, slug=%s WHERE project_id=%s AND agent_id=%s", (clean_name, _agent_slug(clean_name, agent_id), project_id, agent_id))
     updated = {**agent, "name": clean_name, "slug": _agent_slug(clean_name, agent_id)}
     return public_agent(updated)
 
@@ -795,24 +907,24 @@ def delete_agent(project_id: str, agent_id: str) -> None:
     active = active_agent_rows(project_id)
     if len(active) <= 1:
         raise ValueError("cannot_delete_last_agent")
-    ch_post(f"ALTER TABLE {META_DB}.project_agents UPDATE status='deleted' WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} SETTINGS mutations_sync=1")
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys UPDATE status='revoked' WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} AND status='active' SETTINGS mutations_sync=1")
+    meta_execute("UPDATE project_agents SET status='deleted' WHERE project_id=%s AND agent_id=%s", (project_id, agent_id))
+    meta_execute("UPDATE project_api_keys SET status='revoked' WHERE project_id=%s AND agent_id=%s AND status='active'", (project_id, agent_id))
 
 
 def agent_for_project(project_id: str, agent_id: str) -> dict[str, Any] | None:
     if not agent_id:
         return None
-    rows = ch_query_json(f"SELECT * FROM {META_DB}.project_agents WHERE project_id={sql_quote(project_id)} AND agent_id={sql_quote(agent_id)} AND status='active' ORDER BY updated_at DESC LIMIT 1")
+    rows = meta_query("SELECT * FROM project_agents WHERE project_id=%s AND agent_id=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (project_id, agent_id))
     return rows[0] if rows else None
 
 
 def latest_user_by_phone(phone_normalized: str) -> dict[str, Any] | None:
-    rows = ch_query_json(f"SELECT * FROM {META_DB}.users WHERE phone_normalized = {sql_quote(phone_normalized)} AND status = 'active' ORDER BY updated_at DESC LIMIT 1")
+    rows = meta_query("SELECT * FROM users WHERE phone_normalized=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (phone_normalized,))
     return rows[0] if rows else None
 
 
 def projects_for_user(user_id: str) -> list[dict[str, Any]]:
-    return [public_project(r) for r in ch_query_json(f"SELECT * FROM {META_DB}.projects WHERE owner_user_id = {sql_quote(user_id)} AND status = 'active' ORDER BY created_at ASC")]
+    return [public_project(r) for r in meta_query("SELECT * FROM projects WHERE owner_user_id=%s AND status='active' ORDER BY created_at ASC", (user_id,))]
 
 
 def ensure_user_default_project(user_id: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -829,25 +941,25 @@ def ensure_user_default_project(user_id: str) -> tuple[list[dict[str, Any]], dic
 
 def request_phone_code(phone: str, country_code: str | None, request_ip: str, user_agent: str) -> dict[str, Any]:
     cc, number, normalized = normalize_phone(phone, country_code)
-    recent = ch_query_json(f"SELECT count() AS c FROM {META_DB}.phone_login_codes WHERE phone_normalized={sql_quote(normalized)} AND created_at > now64(3) - INTERVAL {PHONE_CODE_RESEND_INTERVAL_SECONDS} SECOND")
+    recent = meta_query("SELECT count(*) AS c FROM phone_login_codes WHERE phone_normalized=%s AND created_at > DATE_SUB(NOW(3), INTERVAL %s SECOND)", (normalized, PHONE_CODE_RESEND_INTERVAL_SECONDS))
     if recent and to_int(recent[0].get("c")) > 0:
         raise ValueError("phone_code_resend_limited")
-    daily_phone = ch_query_json(f"SELECT count() AS c FROM {META_DB}.phone_login_codes WHERE phone_normalized={sql_quote(normalized)} AND created_at > now64(3) - INTERVAL 1 DAY")
+    daily_phone = meta_query("SELECT count(*) AS c FROM phone_login_codes WHERE phone_normalized=%s AND created_at > DATE_SUB(NOW(3), INTERVAL 1 DAY)", (normalized,))
     if daily_phone and to_int(daily_phone[0].get("c")) >= PHONE_CODE_DAILY_LIMIT:
         raise ValueError("phone_daily_limited")
-    hourly_ip = ch_query_json(f"SELECT count() AS c FROM {META_DB}.phone_login_codes WHERE request_ip={sql_quote(request_ip)} AND created_at > now64(3) - INTERVAL 1 HOUR")
+    hourly_ip = meta_query("SELECT count(*) AS c FROM phone_login_codes WHERE request_ip=%s AND created_at > DATE_SUB(NOW(3), INTERVAL 1 HOUR)", (request_ip,))
     if hourly_ip and to_int(hourly_ip[0].get("c")) >= PHONE_CODE_IP_HOURLY_LIMIT:
         raise ValueError("ip_hourly_limited")
     code = f"{secrets.randbelow(1000000):06d}"
-    row = {"code_id": "code_" + uuid.uuid4().hex, "phone_normalized": normalized, "code_hash": hash_secret(code), "status": "active", "expires_at": datetime.fromtimestamp(time.time() + PHONE_CODE_TTL_SECONDS, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:23], "request_ip": request_ip, "user_agent": user_agent[:256], "attempt_count": 0}
-    insert_json_each_row(f"{META_DB}.phone_login_codes", ["code_id", "phone_normalized", "code_hash", "status", "expires_at", "request_ip", "user_agent", "attempt_count"], [row])
+    row = {"code_id": "code_" + uuid.uuid4().hex, "phone_normalized": normalized, "code_hash": hash_secret(code), "status": "active", "expires_at": datetime.fromtimestamp(time.time() + PHONE_CODE_TTL_SECONDS, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:23], "request_ip": request_ip, "user_agent": user_agent[:512], "attempt_count": 0}
+    meta_insert("phone_login_codes", ["code_id", "phone_normalized", "code_hash", "status", "expires_at", "request_ip", "user_agent", "attempt_count"], row)
     send_sms_code(number if cc == "+86" else normalized, code, "login")
     return {"ok": True, "phone_normalized": normalized, "expires_in": PHONE_CODE_TTL_SECONDS}
 
 
 def login_with_phone_code(phone: str, country_code: str | None, code: str) -> dict[str, Any]:
     cc, number, normalized = normalize_phone(phone, country_code)
-    rows = ch_query_json(f"SELECT * FROM {META_DB}.phone_login_codes WHERE phone_normalized={sql_quote(normalized)} AND status='active' ORDER BY created_at DESC LIMIT 1")
+    rows = meta_query("SELECT * FROM phone_login_codes WHERE phone_normalized=%s AND status='active' ORDER BY created_at DESC LIMIT 1", (normalized,))
     if not rows:
         raise PermissionError("invalid_code")
     code_row = rows[0]
@@ -856,15 +968,15 @@ def login_with_phone_code(phone: str, country_code: str | None, code: str) -> di
     if stringify(code_row.get("expires_at")) < now_dt64():
         raise PermissionError("code_expired")
     if not hmac.compare_digest(stringify(code_row.get("code_hash")), hash_secret(code)):
-        ch_post(f"ALTER TABLE {META_DB}.phone_login_codes UPDATE attempt_count = attempt_count + 1 WHERE code_id={sql_quote(stringify(code_row.get('code_id')))}")
+        meta_execute("UPDATE phone_login_codes SET attempt_count = attempt_count + 1 WHERE code_id=%s", (stringify(code_row.get("code_id")),))
         raise PermissionError("invalid_code")
-    ch_post(f"ALTER TABLE {META_DB}.phone_login_codes UPDATE status='consumed', consumed_at=now64(3) WHERE code_id={sql_quote(stringify(code_row.get('code_id')))}")
+    meta_execute("UPDATE phone_login_codes SET status='consumed', consumed_at=NOW(3) WHERE code_id=%s", (stringify(code_row.get("code_id")),))
     user = latest_user_by_phone(normalized)
     if not user:
         user = {"user_id": "user_" + uuid.uuid4().hex, "phone_country_code": cc, "phone_number": number, "phone_normalized": normalized, "display_name": "", "status": "active"}
-        insert_json_each_row(f"{META_DB}.users", ["user_id", "phone_country_code", "phone_number", "phone_normalized", "display_name", "status"], [user])
+        meta_insert("users", ["user_id", "phone_country_code", "phone_number", "phone_normalized", "display_name", "status"], user)
     else:
-        ch_post(f"ALTER TABLE {META_DB}.users UPDATE last_login_at=now64(3) WHERE user_id={sql_quote(stringify(user.get('user_id')))}")
+        meta_execute("UPDATE users SET last_login_at=NOW(3) WHERE user_id=%s", (stringify(user.get("user_id")),))
     projects, new_key = ensure_user_default_project(stringify(user["user_id"]))
     result = {"token": issue_jwt(stringify(user["user_id"])), "user": public_user(user), "projects": projects, "current_project_id": projects[0]["project_id"] if projects else None}
     if new_key:
@@ -873,7 +985,7 @@ def login_with_phone_code(phone: str, country_code: str | None, code: str) -> di
 
 
 def require_project_owner(project_id: str, jwt_payload: dict[str, Any]) -> dict[str, Any]:
-    rows = ch_query_json(f"SELECT * FROM {META_DB}.projects WHERE project_id={sql_quote(project_id)} AND status='active' ORDER BY updated_at DESC LIMIT 1")
+    rows = meta_query("SELECT * FROM projects WHERE project_id=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (project_id,))
     if not rows:
         raise FileNotFoundError("project_not_found")
     project = rows[0]
@@ -890,14 +1002,14 @@ def authenticate_api_key(auth_header: str | None) -> dict[str, Any]:
         raise PermissionError("invalid_api_key")
     key_hash = hash_secret(key)
     prefix = api_key_prefix(key)
-    rows = ch_query_json(f"SELECT api_key_id, project_id, agent_id, status FROM {META_DB}.project_api_keys WHERE key_prefix={sql_quote(prefix)} AND key_hash={sql_quote(key_hash)} AND status='active' ORDER BY updated_at DESC LIMIT 1")
+    rows = meta_query("SELECT api_key_id, project_id, agent_id, status FROM project_api_keys WHERE key_prefix=%s AND key_hash=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (prefix, key_hash))
     if not rows:
         raise PermissionError("invalid_api_key")
     key_row = rows[0]
-    projects = ch_query_json(f"SELECT * FROM {META_DB}.projects WHERE project_id={sql_quote(stringify(key_row.get('project_id')))} AND status='active' ORDER BY updated_at DESC LIMIT 1")
+    projects = meta_query("SELECT * FROM projects WHERE project_id=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (stringify(key_row.get("project_id")),))
     if not projects:
         raise PermissionError("invalid_api_key")
-    ch_post(f"ALTER TABLE {META_DB}.project_api_keys UPDATE last_used_at=now64(3) WHERE api_key_id={sql_quote(stringify(key_row.get('api_key_id')))}")
+    meta_execute("UPDATE project_api_keys SET last_used_at=NOW(3) WHERE api_key_id=%s", (stringify(key_row.get("api_key_id")),))
     project = projects[0]
     agent = agent_for_project(stringify(project.get("project_id")), stringify(key_row.get("agent_id")))
     if not agent and not stringify(key_row.get("agent_id")):
@@ -906,7 +1018,7 @@ def authenticate_api_key(auth_header: str | None) -> dict[str, Any]:
 
 
 def list_api_keys(project_id: str) -> list[dict[str, Any]]:
-    rows = ch_query_json(f"SELECT api_key_id, project_id, agent_id, name, key_prefix, key_plaintext AS api_key, status, created_at, updated_at, last_used_at FROM {META_DB}.project_api_keys WHERE project_id={sql_quote(project_id)} AND agent_id='' AND status='active' ORDER BY created_at ASC")
+    rows = meta_query("SELECT api_key_id, project_id, agent_id, name, key_prefix, key_plaintext AS api_key, status, created_at, updated_at, last_used_at FROM project_api_keys WHERE project_id=%s AND agent_id='' AND status='active' ORDER BY created_at ASC", (project_id,))
     return rows[-1:] if rows else []
 
 
@@ -1781,7 +1893,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "service": "backend-api", "clickhouse_url": CLICKHOUSE_URL})
             elif parsed.path == "/api/me":
                 jwt_payload = self._auth_payload()
-                rows = ch_query_json(f"SELECT * FROM {META_DB}.users WHERE user_id={sql_quote(stringify(jwt_payload.get('sub')))} AND status='active' ORDER BY updated_at DESC LIMIT 1")
+                rows = meta_query("SELECT * FROM users WHERE user_id=%s AND status='active' ORDER BY updated_at DESC LIMIT 1", (stringify(jwt_payload.get("sub")),))
                 self._send_json(200, {"user": public_user(rows[0]) if rows else None})
             elif parsed.path == "/api/projects":
                 jwt_payload = self._auth_payload()
@@ -1950,15 +2062,19 @@ class Handler(BaseHTTPRequestHandler):
             project_id = urllib.parse.unquote(m.group(1))
             require_project_owner(project_id, jwt_payload)
             payload = self._read_json_body()
-            sets = []
+            fields = []
+            values = []
             if "name" in payload:
-                sets.append(f"name={sql_quote(stringify(payload.get('name')))}")
+                fields.append("name=%s")
+                values.append(stringify(payload.get("name")))
             if "slug" in payload:
-                sets.append(f"slug={sql_quote(stringify(payload.get('slug')))}")
-            if not sets:
+                fields.append("slug=%s")
+                values.append(stringify(payload.get("slug")))
+            if not fields:
                 self._send_json(400, {"error": "nothing_to_update"})
                 return
-            ch_post(f"ALTER TABLE {META_DB}.projects UPDATE {', '.join(sets)} WHERE project_id={sql_quote(project_id)}")
+            values.append(project_id)
+            meta_execute(f"UPDATE projects SET {', '.join(fields)} WHERE project_id=%s", values)
             self._send_json(200, {"ok": True})
         except json.JSONDecodeError as exc:
             self._send_json(400, {"error": "invalid_json", "detail": str(exc)})
@@ -1991,7 +2107,7 @@ class Handler(BaseHTTPRequestHandler):
             project_id = urllib.parse.unquote(m.group(1))
             api_key_id = urllib.parse.unquote(m.group(2))
             require_project_owner(project_id, jwt_payload)
-            ch_post(f"ALTER TABLE {META_DB}.project_api_keys UPDATE status='revoked' WHERE project_id={sql_quote(project_id)} AND api_key_id={sql_quote(api_key_id)}")
+            meta_execute("UPDATE project_api_keys SET status='revoked' WHERE project_id=%s AND api_key_id=%s", (project_id, api_key_id))
             self._send_json(200, {"ok": True})
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
