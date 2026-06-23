@@ -7,6 +7,7 @@ import (
 	"go.opentelemetry.io/collector/connector"
 	forwardconnector "go.opentelemetry.io/collector/connector/forwardconnector"
 	"go.opentelemetry.io/collector/exporter"
+	agentotelclickhouseexporter "go.opentelemetry.io/collector/exporter/agentotelclickhouseexporter"
 	debugexporter "go.opentelemetry.io/collector/exporter/debugexporter"
 	nopexporter "go.opentelemetry.io/collector/exporter/nopexporter"
 	otlpexporter "go.opentelemetry.io/collector/exporter/otlpexporter"
@@ -16,6 +17,7 @@ import (
 	zpagesextension "go.opentelemetry.io/collector/extension/zpagesextension"
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/processor"
+	agentotelprocessor "go.opentelemetry.io/collector/processor/agentotelprocessor"
 	batchprocessor "go.opentelemetry.io/collector/processor/batchprocessor"
 	memorylimiterprocessor "go.opentelemetry.io/collector/processor/memorylimiterprocessor"
 	"go.opentelemetry.io/collector/receiver"
@@ -69,6 +71,7 @@ func components() (otelcol.Factories, error) {
 	})
 
 	factories.Exporters, err = otelcol.MakeFactoryMap[exporter.Factory](
+		agentotelclickhouseexporter.NewFactory(),
 		debugexporter.NewFactory(),
 		nopexporter.NewFactory(),
 		otlpexporter.NewFactory(),
@@ -78,13 +81,15 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ExporterModules = makeModulesMap(factories.Exporters, map[component.Type]string{
-		debugexporter.NewFactory().Type():    "go.opentelemetry.io/collector/exporter/debugexporter v0.154.0",
-		nopexporter.NewFactory().Type():      "go.opentelemetry.io/collector/exporter/nopexporter v0.154.0",
-		otlpexporter.NewFactory().Type():     "go.opentelemetry.io/collector/exporter/otlpexporter v0.154.0",
-		otlphttpexporter.NewFactory().Type(): "go.opentelemetry.io/collector/exporter/otlphttpexporter v0.154.0",
+		agentotelclickhouseexporter.NewFactory().Type(): "go.opentelemetry.io/collector/exporter/agentotelclickhouseexporter v0.154.0-agentotel",
+		debugexporter.NewFactory().Type():               "go.opentelemetry.io/collector/exporter/debugexporter v0.154.0",
+		nopexporter.NewFactory().Type():                 "go.opentelemetry.io/collector/exporter/nopexporter v0.154.0",
+		otlpexporter.NewFactory().Type():                "go.opentelemetry.io/collector/exporter/otlpexporter v0.154.0",
+		otlphttpexporter.NewFactory().Type():            "go.opentelemetry.io/collector/exporter/otlphttpexporter v0.154.0",
 	})
 
 	factories.Processors, err = otelcol.MakeFactoryMap[processor.Factory](
+		agentotelprocessor.NewFactory(),
 		batchprocessor.NewFactory(),
 		memorylimiterprocessor.NewFactory(),
 	)
@@ -92,6 +97,7 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ProcessorModules = makeModulesMap(factories.Processors, map[component.Type]string{
+		agentotelprocessor.NewFactory().Type():     "go.opentelemetry.io/collector/processor/agentotelprocessor v0.154.0-agentotel",
 		batchprocessor.NewFactory().Type():         "go.opentelemetry.io/collector/processor/batchprocessor v0.154.0",
 		memorylimiterprocessor.NewFactory().Type(): "go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.154.0",
 	})

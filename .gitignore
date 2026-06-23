@@ -27,6 +27,7 @@ server/backend-status-api/run/
 .vscode/
 
 # Generated/binary artifacts
+bin/
 rootfs/
 rootfs.tar
 app-server

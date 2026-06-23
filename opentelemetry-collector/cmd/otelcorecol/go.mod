@@ -107,6 +107,7 @@ require (
 	go.opentelemetry.io/collector/consumer/consumererror/xconsumererror v0.154.0 // indirect
 	go.opentelemetry.io/collector/consumer/consumertest v0.154.0 // indirect
 	go.opentelemetry.io/collector/consumer/xconsumer v0.154.0 // indirect
+	go.opentelemetry.io/collector/exporter/agentotelclickhouseexporter v0.154.0-agentotel
 	go.opentelemetry.io/collector/exporter/exporterhelper v0.154.0 // indirect
 	go.opentelemetry.io/collector/exporter/exporterhelper/xexporterhelper v0.154.0 // indirect
 	go.opentelemetry.io/collector/exporter/exportertest v0.154.0 // indirect
@@ -128,6 +129,7 @@ require (
 	go.opentelemetry.io/collector/pdata/xpdata v0.154.0 // indirect
 	go.opentelemetry.io/collector/pipeline v1.60.0 // indirect
 	go.opentelemetry.io/collector/pipeline/xpipeline v0.154.0 // indirect
+	go.opentelemetry.io/collector/processor/agentotelprocessor v0.154.0-agentotel
 	go.opentelemetry.io/collector/processor/processorhelper v0.154.0 // indirect
 	go.opentelemetry.io/collector/processor/processorhelper/xprocessorhelper v0.154.0 // indirect
 	go.opentelemetry.io/collector/processor/processortest v0.154.0 // indirect
@@ -337,3 +339,7 @@ replace go.opentelemetry.io/collector/service => ../../service
 replace go.opentelemetry.io/collector/service/hostcapabilities => ../../service/hostcapabilities
 
 replace go.opentelemetry.io/collector/service/telemetry/telemetrytest => ../../service/telemetry/telemetrytest
+
+replace go.opentelemetry.io/collector/processor/agentotelprocessor => ../../processor/agentotelprocessor
+
+replace go.opentelemetry.io/collector/exporter/agentotelclickhouseexporter => ../../exporter/agentotelclickhouseexporter

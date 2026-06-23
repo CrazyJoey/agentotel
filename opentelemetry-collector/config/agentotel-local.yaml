@@ -1,0 +1,30 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  agentotel:
+    default_agent_name: hermes-agent
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+
+exporters:
+  agentotelclickhouse:
+    endpoint: http://127.0.0.1:8123
+    database: agent_observability
+    project_id: default
+    environment: default
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [agentotel, batch]
+      exporters: [agentotelclickhouse, debug]
