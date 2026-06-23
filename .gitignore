@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+
+# Local env / secrets
+.env
+.env.*
+*.local
+*.secret
+
+# Runtime logs / pid files
+*.log
+*.pid
+backend-status-api/run/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Generated/binary artifacts
+rootfs/
+rootfs.tar
+app-server
+oom
+
+# Local databases / volumes
+*.sqlite
+*.sqlite3
+*.db
+clickhouse-data/

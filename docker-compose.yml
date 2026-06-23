@@ -1,0 +1,58 @@
+services:
+  agent-mission-control:
+    build: .
+    container_name: agent-mission-control
+    ports:
+      - "8088:8088"
+    environment:
+      # In container mode, set this to a host-reachable backend address.
+      # Host-network mode is simpler for local MVP operation; see README.
+      MISSION_CONTROL_BACKEND_HOST: host.containers.internal
+      MISSION_CONTROL_BACKEND_PORT: "8090"
+      AGENT_OBSERVABILITY_BACKEND_HOST: host.containers.internal
+      AGENT_OBSERVABILITY_BACKEND_PORT: "8091"
+    restart: unless-stopped
+
+  backend-api:
+    build: ./backend-api
+    container_name: agent-observability-backend-api
+    ports:
+      - "127.0.0.1:8091:8091"
+    environment:
+      CLICKHOUSE_DB: agent_observability
+      CLICKHOUSE_URL: http://host.containers.internal:8123/?database=agent_observability
+      PROJECT_ID: default
+      ENVIRONMENT: default
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  clickhouse:
+    image: docker.m.daocloud.io/clickhouse/clickhouse-server:latest
+    container_name: agent-observability-clickhouse
+    ports:
+      # Bind to localhost only for single-server MVP safety.
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    environment:
+      CLICKHOUSE_DB: agent_observability
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:

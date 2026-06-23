@@ -1,0 +1,52 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "agent-service"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "trace_ingest_smoke_001",
+              "spanId": "span_ingest_root",
+              "name": "agent.run",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1781500000000000000",
+              "endTimeUnixNano": "1781500001200000000",
+              "status": {"code": "STATUS_CODE_OK"},
+              "attributes": [
+                {"key": "session.id", "value": {"stringValue": "session_ingest_smoke_001"}},
+                {"key": "agent.name", "value": {"stringValue": "demo-agent"}},
+                {"key": "llm.provider", "value": {"stringValue": "openai"}},
+                {"key": "llm.model", "value": {"stringValue": "gpt-4o-mini"}},
+                {"key": "llm.usage.input_tokens", "value": {"intValue": "10"}},
+                {"key": "llm.usage.output_tokens", "value": {"intValue": "20"}},
+                {"key": "input_preview", "value": {"stringValue": "hello"}},
+                {"key": "output_preview", "value": {"stringValue": "world"}}
+              ]
+            },
+            {
+              "trace_id": "trace_ingest_smoke_001",
+              "span_id": "span_ingest_tool",
+              "parent_span_id": "span_ingest_root",
+              "name": "tool.search",
+              "kind": "CLIENT",
+              "start_time_unix_nano": 1781500001200000000,
+              "end_time_unix_nano": 1781500002000000000,
+              "status": {"code": "ERROR", "message": "tool timeout"},
+              "attributes": [
+                {"key": "session.id", "value": {"stringValue": "session_ingest_smoke_001"}},
+                {"key": "tool.name", "value": {"stringValue": "search"}},
+                {"key": "tool_input_preview", "value": {"stringValue": "{\"q\":\"hello\"}"}},
+                {"key": "tool_output_preview", "value": {"stringValue": "timeout"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

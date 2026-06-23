@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentOTel 可观测控制台</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <section id="auth-page" class="auth-page" hidden>
+      <div class="auth-ambient" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="auth-network" aria-hidden="true">
+        <i class="net-line l1"></i>
+        <i class="net-line l2"></i>
+        <i class="net-line l3"></i>
+        <i class="net-axis"></i>
+        <b class="net-dot d1"></b>
+        <b class="net-dot d2"></b>
+        <b class="net-dot d3"></b>
+        <b class="net-dot d4"></b>
+      </div>
+      <div class="auth-hero">
+        <div class="auth-copy">
+          <div class="auth-brandline">
+            <div class="brand-mark">AO</div>
+            <span>AgentOTel</span>
+          </div>
+          <p class="auth-kicker">AgentOTel</p>
+          <h1>让 AI Agent 可观测，让智能系统可信赖</h1>
+          <p class="auth-tagline">Make AI Agents Observable.<br />Build Trustworthy AI Systems.</p>
+          <div class="auth-divider" aria-hidden="true"></div>
+          <p class="auth-subtitle">OpenTelemetry-native observability platform<br />for the next generation of AI agents.</p>
+          <div class="auth-agent-strip" aria-label="支持接入的 Agent">
+            <p>Observable with AgentOTel</p>
+            <div class="agent-logo-grid">
+              <span class="agent-logo hermes"><i>H</i>Hermes</span>
+              <span class="agent-logo claude"><i>C</i>Claude Code</span>
+              <span class="agent-logo codex"><i>⌘</i>Codex</span>
+              <span class="agent-logo gemini"><i>G</i>Gemini CLI</span>
+              <span class="agent-logo opencode"><i>O</i>opencode</span>
+              <span class="agent-logo qwen"><i>Q</i>Qwen Code</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="auth-card">
+          <h2>手机号登录</h2>
+          <label class="auth-field">
+            <span>手机号</span>
+            <input id="phone-input" type="tel" inputmode="tel" autocomplete="tel" placeholder="请输入手机号" />
+          </label>
+          <div class="auth-code-row">
+            <label class="auth-field">
+              <span>验证码</span>
+              <input id="phone-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码" />
+            </label>
+            <button id="send-phone-code" class="button subtle" type="button">获取验证码</button>
+          </div>
+          <button id="phone-login-button" class="button primary auth-submit" type="button">登录 / 注册</button>
+          <p id="auth-message" class="auth-message"></p>
+          <p class="auth-footnote">首次登录会自动创建默认项目和接入 API Key。</p>
+        </div>
+      </div>
+    </section>
+    <div class="app-shell locked">
+      <header class="topbar">
+        <div class="brand-block" aria-label="产品标识">
+          <div class="brand-mark" aria-hidden="true">AO</div>
+          <div>
+            <p class="top-kicker">AgentOTel</p>
+          </div>
+        </div>
+        <div class="agent-switcher" aria-label="切换 Agent">
+          <span class="agent-context-icon" aria-hidden="true"></span>
+          <span class="agent-context-slash" aria-hidden="true">/</span>
+          <button id="agent-menu-trigger" class="agent-menu-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span id="agent-menu-current">default</span>
+            <span class="agent-menu-chevron" aria-hidden="true">⌄</span>
+          </button>
+          <div id="agent-menu" class="agent-menu" role="menu" hidden>
+            <div class="agent-menu-title">Agents</div>
+            <div id="agent-menu-list" class="agent-menu-list"></div>
+            <button id="agent-menu-new" class="agent-menu-new" type="button" role="menuitem">+ 新建 Agent</button>
+          </div>
+        </div>
+        <div class="topbar-actions" aria-label="操作">
+          <div class="time-range-control" aria-label="时间范围筛选">
+            <button id="time-range-trigger" class="time-range-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span id="time-range-current">最近 24 小时</span>
+              <span class="time-range-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div id="time-range-menu" class="time-range-menu" hidden>
+              <div class="time-preset-list" role="menu" aria-label="快速时间范围">
+                <button type="button" data-time-preset="1h">最近 1 小时</button>
+                <button type="button" data-time-preset="3h">最近 3 小时</button>
+                <button type="button" data-time-preset="6h">最近 6 小时</button>
+                <button type="button" data-time-preset="12h">最近 12 小时</button>
+                <button type="button" data-time-preset="24h">最近 24 小时</button>
+                <button type="button" data-time-preset="3d">最近 3 天</button>
+                <button type="button" data-time-preset="7d">最近 7 天</button>
+              </div>
+              <div class="custom-time-range" id="custom-time-range">
+                <div class="calendar-card" aria-label="日历选择">
+                  <div class="calendar-head">
+                    <button id="calendar-prev" type="button" aria-label="上个月">‹</button>
+                    <strong id="calendar-title">--</strong>
+                    <button id="calendar-next" type="button" aria-label="下个月">›</button>
+                  </div>
+                  <div class="calendar-weekdays" aria-hidden="true">
+                    <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+                  </div>
+                  <div id="calendar-grid" class="calendar-grid"></div>
+                </div>
+                <div class="calendar-fields">
+                  <label>开始<input id="custom-from" type="datetime-local" aria-label="自定义开始时间" /></label>
+                  <label>结束<input id="custom-to" type="datetime-local" aria-label="自定义结束时间" /></label>
+                  <button id="apply-time-range" class="time-apply-button" type="button">应用</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="主导航">
+        <nav class="nav-stack">
+          <button id="nav-overview" class="nav-item active" type="button" data-page="overview"><span>⌁</span>总览</button>
+          <button id="nav-sessions" class="nav-item" type="button" data-page="sessions"><span>◫</span>会话</button>
+          <button id="nav-traces" class="nav-item" type="button" data-page="traces"><span>↳</span>任务</button>
+          <button id="nav-integrations" class="nav-item" type="button" data-page="integrations"><span>↗</span>接入</button>
+          <button id="nav-settings" class="nav-item" type="button" data-page="settings"><span>⚙</span>设置</button>
+        </nav>
+        <div class="sidebar-user" aria-label="当前用户">
+          <div class="user-profile-row">
+            <div class="user-avatar" aria-hidden="true">U</div>
+            <div class="user-meta">
+              <strong id="sidebar-user-name">--</strong>
+              <span id="sidebar-user-phone">--</span>
+            </div>
+          </div>
+          <button id="logout-button" class="logout-button" type="button">退出登录</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <div id="api-banner" class="api-banner" hidden></div>
+
+        <section id="integrations-page" class="page-view onboarding-page" aria-label="如何接入" hidden>
+          <div class="integration-layout">
+            <aside class="integration-tabs" aria-label="Agent 接入类型">
+              <button class="integration-tab active" type="button" data-integration-tab="hermes">Hermes Agent</button>
+              <button class="integration-tab" type="button" data-integration-tab="claude">Claude Code</button>
+              <button class="integration-tab" type="button" data-integration-tab="codex">Codex</button>
+              <button class="integration-tab" type="button" data-integration-tab="gemini">Gemini CLI</button>
+              <button class="integration-tab" type="button" data-integration-tab="opencode">opencode</button>
+              <button class="integration-tab" type="button" data-integration-tab="qwen-code">Qwen Code</button>
+              <button class="integration-tab" type="button" data-integration-tab="openai-agents">OpenAI Agents SDK</button>
+              <button class="integration-tab" type="button" data-integration-tab="langgraph">LangGraph / LangChain</button>
+              <button class="integration-tab" type="button" data-integration-tab="llamaindex">LlamaIndex</button>
+              <button class="integration-tab" type="button" data-integration-tab="crewai-autogen">CrewAI / AutoGen</button>
+            </aside>
+
+            <div class="integration-content">
+              <section id="integration-panel-dynamic" class="integration-section" aria-live="polite"></section>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-page" class="page-view settings-page" aria-label="设置" hidden>
+          <div class="settings-split-grid">
+            <section class="integration-project-card settings-card" aria-label="Agent 管理">
+              <div class="settings-card-head">
+                <div>
+                  <h3>Agents</h3>
+                  <span>为每个开发 Agent 创建独立 API Key。</span>
+                </div>
+              </div>
+              <div class="agent-create-row">
+                <input id="agent-name-input" type="text" placeholder="例如 backend-dev" autocomplete="off" />
+                <button id="create-agent" class="button primary" type="button">新增 Agent</button>
+              </div>
+              <div id="agent-list" class="agent-list" aria-live="polite"></div>
+            </section>
+
+            <section class="integration-project-card settings-card" aria-label="当前 Agent API Key">
+              <div class="settings-card-head">
+                <div>
+                  <h3>当前 Agent</h3>
+                  <span id="settings-current-agent-name">未选择 Agent</span>
+                </div>
+                <button id="create-api-key" class="button subtle" type="button">重新生成 API Key</button>
+              </div>
+              <div class="settings-api-key-row">
+                <span>API Key</span>
+                <code id="integration-api-key-display">未创建</code>
+                <button class="copy-button" type="button" data-copy-target="integration-api-key-display">复制</button>
+              </div>
+              <p class="integration-note">复制后填入后端开发 Agent 的 OTLP Authorization: Bearer。</p>
+              <div id="new-api-key-once" class="new-key-once" hidden></div>
+              <div id="api-key-list" class="api-key-list" hidden></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="sessions-page" class="page-view" aria-label="会话" hidden>
+          <section class="top-sessions-panel sessions-page-panel" aria-label="会话列表">
+            <div class="panel-heading compact-heading">
+              <p class="compact-title">会话</p>
+              <div class="segmented-control session-page-sort" role="group" aria-label="Session 排序">
+                <button class="segment active" type="button" data-session-page-sort="latest">最新</button>
+                <button class="segment" type="button" data-session-page-sort="tokens">Token</button>
+                <button class="segment" type="button" data-session-page-sort="duration">时长</button>
+                <button class="segment" type="button" data-session-page-sort="errors">异常</button>
+              </div>
+            </div>
+            <div class="page-filter-bar" aria-label="会话搜索">
+              <label class="search-box compact-search">
+                <span>搜索</span>
+                <input id="session-page-search" type="search" placeholder="按 prompt / session_id / agent 搜索…" autocomplete="off" />
+              </label>
+              <div class="segmented-control page-status-filter" role="group" aria-label="Session 状态筛选">
+                <button class="segment active" type="button" data-session-page-status="all">全部</button>
+                <button class="segment" type="button" data-session-page-status="errors">仅错误</button>
+              </div>
+            </div>
+            <div id="session-page-summary" class="list-context-bar">当前时间范围 · 正在加载</div>
+            <div id="session-page-list" class="top-sessions-list loading-state">
+              <div class="state-card"><span class="spinner"></span><strong>正在加载会话</strong></div>
+            </div>
+            <div class="pagination-bar" aria-label="Session 分页">
+              <button id="session-page-prev" class="button subtle" type="button">上一页</button>
+              <span id="session-page-info" class="pagination-info">第 1 页 · 每页 20 条</span>
+              <button id="session-page-next" class="button subtle" type="button">下一页</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="traces-page" class="page-view" aria-label="任务" hidden>
+          <section class="top-traces-panel traces-page-panel" aria-label="任务列表">
+            <div class="panel-heading compact-heading">
+              <p class="compact-title">任务</p>
+              <div class="segmented-control trace-page-sort" role="group" aria-label="Trace 排序">
+                <button class="segment active" type="button" data-trace-page-sort="latest">最新</button>
+                <button class="segment" type="button" data-trace-page-sort="tokens">Token</button>
+                <button class="segment" type="button" data-trace-page-sort="duration">时长</button>
+                <button class="segment" type="button" data-trace-page-sort="errors">异常</button>
+              </div>
+            </div>
+            <div class="page-filter-bar" aria-label="任务搜索">
+              <label class="search-box compact-search">
+                <span>搜索</span>
+                <input id="trace-page-search" type="search" placeholder="按 prompt / trace_id / session_id 搜索…" autocomplete="off" />
+              </label>
+              <div class="segmented-control page-status-filter" role="group" aria-label="任务状态筛选">
+                <button class="segment active" type="button" data-trace-page-status="all">全部</button>
+                <button class="segment" type="button" data-trace-page-status="errors">仅错误</button>
+              </div>
+            </div>
+            <div id="trace-page-summary" class="list-context-bar">当前时间范围 · 正在加载</div>
+            <div id="trace-page-list" class="top-traces-list loading-state">
+              <div class="state-card"><span class="spinner"></span><strong>正在加载任务</strong></div>
+            </div>
+            <div class="pagination-bar" aria-label="任务分页">
+              <button id="trace-page-prev" class="button subtle" type="button">上一页</button>
+              <span id="trace-page-info" class="pagination-info">第 1 页 · 每页 20 条</span>
+              <button id="trace-page-next" class="button subtle" type="button">下一页</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="overview-page" class="page-view" aria-label="Trace Explorer dashboard" hidden>
+        <section class="kpi-strip" aria-label="Agent 可观测 KPI">
+          <article class="kpi-card session-kpi-card">
+            <div class="kpi-topline">
+              <span class="kpi-label">会话</span>
+              <span id="session-delta" class="kpi-delta flat">--</span>
+            </div>
+            <a id="summary-sessions" class="kpi-number-link" href="#sessions">--</a>
+            <svg id="session-sparkline" class="sparkline" viewBox="0 0 160 36" preserveAspectRatio="none" aria-label="Session 趋势"></svg>
+            <div class="session-kpi-grid">
+              <span><small>会话时长</small><strong id="session-avg-duration">--</strong></span>
+              <span><small>平均 token</small><strong id="session-avg-tokens">--</strong></span>
+              <span><small>异常</small><strong id="session-error-rate">--</strong></span>
+            </div>
+          </article>
+          <article class="kpi-card trace-kpi-card">
+            <div class="kpi-topline">
+              <span class="kpi-label">任务</span>
+              <span id="trace-delta" class="kpi-delta flat">--</span>
+            </div>
+            <a id="summary-traces" class="kpi-number-link" href="#traces">--</a>
+            <svg id="trace-sparkline" class="sparkline" viewBox="0 0 160 36" preserveAspectRatio="none" aria-label="任务趋势"></svg>
+            <div class="session-kpi-grid trace-kpi-grid">
+              <span><small>任务时长</small><strong id="trace-avg-duration">--</strong></span>
+              <span><small>平均 token</small><strong id="trace-avg-tokens">--</strong></span>
+              <span><small>异常</small><strong id="trace-error-rate">--</strong></span>
+            </div>
+          </article>
+          <article class="kpi-card score-kpi-card">
+            <div class="kpi-topline">
+              <span class="kpi-label">评分</span>
+              <span class="kpi-delta flat">待上线</span>
+            </div>
+            <strong id="summary-score">--</strong>
+            <svg id="score-sparkline" class="sparkline" viewBox="0 0 160 36" preserveAspectRatio="none" aria-label="Agent Score 趋势"></svg>
+            <div class="session-kpi-grid score-kpi-grid">
+              <span><small>质量</small><strong>--</strong></span>
+              <span><small>稳定</small><strong>--</strong></span>
+              <span><small>反馈</small><strong>--</strong></span>
+            </div>
+          </article>
+          <article class="kpi-card token-kpi-card">
+            <div class="kpi-topline">
+              <span class="kpi-label">Token 用量</span>
+              <span id="token-delta" class="kpi-delta flat">--</span>
+            </div>
+            <strong id="summary-tokens">--</strong>
+            <svg id="token-sparkline" class="sparkline" viewBox="0 0 160 36" preserveAspectRatio="none" aria-label="Token 使用量趋势"></svg>
+            <div class="session-kpi-grid token-kpi-grid">
+              <span><small>输入</small><strong id="token-input">--</strong></span>
+              <span><small>输出</small><strong id="token-output">--</strong></span>
+              <span><small>成本</small><strong id="token-cost">--</strong></span>
+            </div>
+          </article>
+        </section>
+
+        <section class="top-sessions-panel" aria-label="Top Sessions">
+          <div class="panel-heading compact-heading">
+            <p class="compact-title">重点会话</p>
+            <div class="segmented-control top-session-sort" role="group" aria-label="Top Session 排序">
+              <button class="segment active" type="button" data-top-session-sort="latest">最新</button>
+              <button class="segment" type="button" data-top-session-sort="tokens">Token</button>
+              <button class="segment" type="button" data-top-session-sort="duration">时长</button>
+              <button class="segment" type="button" data-top-session-sort="errors">异常</button>
+            </div>
+          </div>
+          <div id="top-sessions-list" class="top-sessions-list loading-state">
+            <div class="state-card"><span class="spinner"></span><strong>正在加载重点会话</strong></div>
+          </div>
+        </section>
+
+        <section class="top-traces-panel" aria-label="Top Traces">
+          <div class="panel-heading compact-heading">
+            <p class="compact-title">重点任务</p>
+            <div class="segmented-control top-trace-sort" role="group" aria-label="Top Trace 排序">
+              <button class="segment active" type="button" data-top-trace-sort="latest">最新</button>
+              <button class="segment" type="button" data-top-trace-sort="tokens">Token</button>
+              <button class="segment" type="button" data-top-trace-sort="duration">时长</button>
+              <button class="segment" type="button" data-top-trace-sort="errors">异常</button>
+            </div>
+          </div>
+          <div id="top-traces-list" class="top-traces-list loading-state">
+            <div class="state-card"><span class="spinner"></span><strong>正在加载重点任务</strong></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./mock-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
