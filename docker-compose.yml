@@ -1,26 +1,26 @@
 services:
-  agent-mission-control:
-    build: .
-    container_name: agent-mission-control
+  front:
+    build: ./front
+    container_name: agentotel-front
     ports:
       - "8088:8088"
     environment:
-      # In container mode, set this to a host-reachable backend address.
-      # Host-network mode is simpler for local MVP operation; see README.
-      MISSION_CONTROL_BACKEND_HOST: host.containers.internal
+      MISSION_CONTROL_BACKEND_HOST: server
       MISSION_CONTROL_BACKEND_PORT: "8090"
-      AGENT_OBSERVABILITY_BACKEND_HOST: host.containers.internal
+      AGENT_OBSERVABILITY_BACKEND_HOST: server
       AGENT_OBSERVABILITY_BACKEND_PORT: "8091"
+    depends_on:
+      - server
     restart: unless-stopped
 
-  backend-api:
-    build: ./backend-api
-    container_name: agent-observability-backend-api
+  server:
+    build: ./server/backend-api
+    container_name: agentotel-server
     ports:
       - "127.0.0.1:8091:8091"
     environment:
       CLICKHOUSE_DB: agent_observability
-      CLICKHOUSE_URL: http://host.containers.internal:8123/?database=agent_observability
+      CLICKHOUSE_URL: http://clickhouse:8123/?database=agent_observability
       PROJECT_ID: default
       ENVIRONMENT: default
     depends_on:
@@ -30,9 +30,8 @@ services:
 
   clickhouse:
     image: docker.m.daocloud.io/clickhouse/clickhouse-server:latest
-    container_name: agent-observability-clickhouse
+    container_name: agentotel-clickhouse
     ports:
-      # Bind to localhost only for single-server MVP safety.
       - "127.0.0.1:8123:8123"
       - "127.0.0.1:9000:9000"
     environment:
@@ -52,6 +51,21 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+
+  opentelemetry-collector:
+    image: docker.m.daocloud.io/otel/opentelemetry-collector:latest
+    container_name: agentotel-collector
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      AGENTOTEL_API_KEY: ${AGENTOTEL_API_KEY:?set AGENTOTEL_API_KEY}
+    volumes:
+      - ./opentelemetry-collector/config/otel-collector-config.compose.yaml:/etc/otelcol/config.yaml:ro
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      - server
     restart: unless-stopped
 
 volumes:

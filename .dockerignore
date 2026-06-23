@@ -1,4 +1,15 @@
 .git
+.gitignore
+.env
+.env.*
+*.log
+*.pid
+__pycache__
+.pytest_cache
 node_modules
 .DS_Store
+rootfs
 rootfs.tar
+app-server
+oom
+opentelemetry-collector/.git

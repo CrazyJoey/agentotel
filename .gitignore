@@ -19,7 +19,7 @@ build/
 # Runtime logs / pid files
 *.log
 *.pid
-backend-status-api/run/
+server/backend-status-api/run/
 
 # OS/editor
 .DS_Store
