@@ -3,8 +3,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        include_metadata: true
       http:
         endpoint: 0.0.0.0:4318
+        include_metadata: true
 
 processors:
   agentotel:
@@ -12,13 +14,17 @@ processors:
   batch:
     timeout: 1s
     send_batch_size: 128
+    metadata_keys: [authorization]
 
 exporters:
   agentotelclickhouse:
-    endpoint: http://127.0.0.1:8123
-    database: agentotel_project_proj_c9a73efa88944295
-    project_id: proj_c9a73efa88944295
-    environment: default
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    database: ${env:CLICKHOUSE_DATABASE}
+    project_id: ${env:AGENTOTEL_PROJECT_ID}
+    environment: ${env:AGENTOTEL_ENVIRONMENT}
+    username: ${env:CLICKHOUSE_USERNAME}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    api_key_id: ""
   debug:
     verbosity: basic
 

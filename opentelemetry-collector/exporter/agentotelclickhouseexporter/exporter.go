@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
@@ -26,6 +27,7 @@ type Config struct {
 	Database          string `mapstructure:"database"`
 	ProjectID         string `mapstructure:"project_id"`
 	Environment       string `mapstructure:"environment"`
+	APIKeyID          string `mapstructure:"api_key_id"`
 	Username          string `mapstructure:"username"`
 	Password          string `mapstructure:"password"`
 	ObservationsTable string `mapstructure:"observations_table"`
@@ -90,7 +92,7 @@ func normalizeConfig(cfg Config) Config {
 }
 
 func (e *clickHouseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
-	obs, traces, sessions := buildRows(td, e.cfg)
+	obs, traces, sessions := buildRows(ctx, td, e.cfg)
 	if err := e.insert(ctx, e.cfg.ObservationsTable, observationColumns, obs); err != nil {
 		return err
 	}
@@ -189,7 +191,7 @@ type observationRow struct {
 	DurationMS         uint64            `json:"duration_ms"`
 	StatusCode         string            `json:"status_code"`
 	StatusMessage      string            `json:"status_message"`
-	AgentName          string            `json:"agent_name"`
+	APIKeyID           string            `json:"api_key_id"`
 	ModelProvider      string            `json:"model_provider"`
 	ModelName          string            `json:"model_name"`
 	InputTokens        uint32            `json:"input_tokens"`
@@ -211,7 +213,7 @@ type traceRow struct {
 	TraceID          string `json:"trace_id"`
 	SessionID        string `json:"session_id"`
 	RootSpanName     string `json:"root_span_name"`
-	AgentName        string `json:"agent_name"`
+	APIKeyID         string `json:"api_key_id"`
 	StartedAt        string `json:"started_at"`
 	EndedAt          string `json:"ended_at"`
 	DurationMS       uint64 `json:"duration_ms"`
@@ -228,7 +230,7 @@ type sessionRow struct {
 	Environment      string `json:"environment"`
 	SessionID        string `json:"session_id"`
 	UserID           string `json:"user_id"`
-	AgentName        string `json:"agent_name"`
+	APIKeyID         string `json:"api_key_id"`
 	StartedAt        string `json:"started_at"`
 	EndedAt          string `json:"ended_at"`
 	DurationMS       uint64 `json:"duration_ms"`
@@ -240,22 +242,32 @@ type sessionRow struct {
 	TotalTokens      uint32 `json:"total_tokens"`
 }
 
-var observationColumns = []string{"project_id", "environment", "trace_id", "span_id", "parent_span_id", "session_id", "observation_type", "name", "kind", "started_at", "ended_at", "duration_ms", "status_code", "status_message", "agent_name", "model_provider", "model_name", "input_tokens", "output_tokens", "total_tokens", "input_preview", "output_preview", "tool_name", "tool_input_preview", "tool_output_preview", "attributes", "resource_attributes", "source"}
-var traceColumns = []string{"project_id", "environment", "trace_id", "session_id", "root_span_name", "agent_name", "started_at", "ended_at", "duration_ms", "observation_count", "error_count", "input_tokens", "output_tokens", "total_tokens", "status_code"}
-var sessionColumns = []string{"project_id", "environment", "session_id", "user_id", "agent_name", "started_at", "ended_at", "duration_ms", "trace_count", "observation_count", "error_count", "input_tokens", "output_tokens", "total_tokens"}
+var observationColumns = []string{"project_id", "environment", "trace_id", "span_id", "parent_span_id", "session_id", "observation_type", "name", "kind", "started_at", "ended_at", "duration_ms", "status_code", "status_message", "api_key_id", "model_provider", "model_name", "input_tokens", "output_tokens", "total_tokens", "input_preview", "output_preview", "tool_name", "tool_input_preview", "tool_output_preview", "attributes", "resource_attributes", "source"}
+var traceColumns = []string{"project_id", "environment", "trace_id", "session_id", "root_span_name", "api_key_id", "started_at", "ended_at", "duration_ms", "observation_count", "error_count", "input_tokens", "output_tokens", "total_tokens", "status_code"}
+var sessionColumns = []string{"project_id", "environment", "session_id", "user_id", "api_key_id", "started_at", "ended_at", "duration_ms", "trace_count", "observation_count", "error_count", "input_tokens", "output_tokens", "total_tokens"}
 
-func buildRows(td ptrace.Traces, cfg Config) ([]observationRow, []traceRow, []sessionRow) {
+func buildRows(ctx context.Context, td ptrace.Traces, cfg Config) ([]observationRow, []traceRow, []sessionRow) {
 	cfg = normalizeConfig(cfg)
+	requestAPIKeyID := apiKeyIDFromHeaders(ctx)
 	var obs []observationRow
 	for i := 0; i < td.ResourceSpans().Len(); i++ {
 		rs := td.ResourceSpans().At(i)
 		resourceAttrs := mapFromAttrs(rs.Resource().Attributes())
-		serviceName := resourceAttrs["service.name"]
+		resourceAPIKeyID := apiKeyIDFrom(resourceAttrs, firstNonEmpty(requestAPIKeyID, cfg.APIKeyID))
+		delete(resourceAttrs, "agent.name")
+		delete(resourceAttrs, "agent_id")
+		delete(resourceAttrs, "agent.id")
 		for j := 0; j < rs.ScopeSpans().Len(); j++ {
 			spans := rs.ScopeSpans().At(j).Spans()
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
 				attrs := mapFromAttrs(span.Attributes())
+				apiKeyID := apiKeyIDFrom(attrs, resourceAPIKeyID)
+				delete(attrs, "agent.name")
+				delete(attrs, "agent_id")
+				delete(attrs, "agent.id")
+				delete(attrs, "api_key_id")
+				delete(attrs, "agentotel.api_key_id")
 				traceID, spanID := span.TraceID().String(), span.SpanID().String()
 				if traceID == "" || spanID == "" {
 					continue
@@ -265,13 +277,12 @@ func buildRows(td ptrace.Traces, cfg Config) ([]observationRow, []traceRow, []se
 				if total == 0 {
 					total = in + out
 				}
-				agent := firstNonEmpty(attrs["agent.name"], serviceName)
 				status, msg := statusFromSpan(span.Status())
 				start, end := span.StartTimestamp(), span.EndTimestamp()
 				if end == 0 {
 					end = start
 				}
-				obs = append(obs, observationRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, TraceID: traceID, SpanID: spanID, ParentSpanID: span.ParentSpanID().String(), SessionID: attrs["session.id"], ObservationType: inferObservationType(attrs), Name: span.Name(), Kind: span.Kind().String(), StartedAt: ts(start), EndedAt: ts(end), DurationMS: durationMS(start, end), StatusCode: status, StatusMessage: msg, AgentName: agent, ModelProvider: firstNonEmpty(attrs["llm.provider"], attrs["gen_ai.system"]), ModelName: firstNonEmpty(attrs["llm.model"], attrs["gen_ai.request.model"], attrs["model.name"]), InputTokens: in, OutputTokens: out, TotalTokens: total, InputPreview: attrs["input_preview"], OutputPreview: attrs["output_preview"], ToolName: attrs["tool.name"], ToolInputPreview: attrs["tool_input_preview"], ToolOutputPreview: attrs["tool_output_preview"], Attributes: attrs, ResourceAttributes: resourceAttrs, Source: "otel-collector"})
+				obs = append(obs, observationRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, TraceID: traceID, SpanID: spanID, ParentSpanID: span.ParentSpanID().String(), SessionID: attrs["session.id"], ObservationType: inferObservationType(attrs), Name: span.Name(), Kind: span.Kind().String(), StartedAt: ts(start), EndedAt: ts(end), DurationMS: durationMS(start, end), StatusCode: status, StatusMessage: msg, APIKeyID: apiKeyID, ModelProvider: firstNonEmpty(attrs["llm.provider"], attrs["gen_ai.system"]), ModelName: firstNonEmpty(attrs["llm.model"], attrs["gen_ai.request.model"], attrs["model.name"]), InputTokens: in, OutputTokens: out, TotalTokens: total, InputPreview: attrs["input_preview"], OutputPreview: attrs["output_preview"], ToolName: attrs["tool.name"], ToolInputPreview: attrs["tool_input_preview"], ToolOutputPreview: attrs["tool_output_preview"], Attributes: attrs, ResourceAttributes: resourceAttrs, Source: "otel-collector"})
 			}
 		}
 	}
@@ -293,7 +304,7 @@ func aggregateTraces(obs []observationRow, cfg Config) []traceRow {
 				break
 			}
 		}
-		tr := traceRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, TraceID: id, SessionID: firstSession(rows), RootSpanName: root.Name, AgentName: firstAgent(rows), StartedAt: rows[0].StartedAt, EndedAt: maxEnded(rows), ObservationCount: uint32(len(rows))}
+		tr := traceRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, TraceID: id, SessionID: firstSession(rows), RootSpanName: root.Name, APIKeyID: root.APIKeyID, StartedAt: rows[0].StartedAt, EndedAt: maxEnded(rows), ObservationCount: uint32(len(rows))}
 		tr.DurationMS = durationFromStrings(tr.StartedAt, tr.EndedAt)
 		for _, r := range rows {
 			tr.InputTokens += r.InputTokens
@@ -322,7 +333,7 @@ func aggregateSessions(obs []observationRow, cfg Config) []sessionRow {
 	out := make([]sessionRow, 0, len(by))
 	for id, rows := range by {
 		sort.Slice(rows, func(i, j int) bool { return rows[i].StartedAt < rows[j].StartedAt })
-		sr := sessionRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, SessionID: id, UserID: firstAttr(rows, "user.id"), AgentName: firstAgent(rows), StartedAt: rows[0].StartedAt, EndedAt: maxEnded(rows), ObservationCount: uint32(len(rows))}
+		sr := sessionRow{ProjectID: cfg.ProjectID, Environment: cfg.Environment, SessionID: id, UserID: firstAttr(rows, "user.id"), APIKeyID: rows[0].APIKeyID, StartedAt: rows[0].StartedAt, EndedAt: maxEnded(rows), ObservationCount: uint32(len(rows))}
 		traces := map[string]struct{}{}
 		for _, r := range rows {
 			traces[r.TraceID] = struct{}{}
@@ -350,6 +361,30 @@ func uint32From(m map[string]string, k string) uint32 {
 	_, _ = fmt.Sscan(m[k], &n)
 	return n
 }
+func apiKeyIDFrom(m map[string]string, fallback string) string {
+	return firstNonEmpty(m["api_key_id"], m["agentotel.api_key_id"], fallback)
+}
+
+func apiKeyIDFromHeaders(ctx context.Context) string {
+	metadata := client.FromContext(ctx).Metadata
+	for _, key := range []string{"authorization", "Authorization"} {
+		for _, value := range metadata.Get(key) {
+			if token := bearerToken(value); token != "" {
+				return token
+			}
+		}
+	}
+	return ""
+}
+
+func bearerToken(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 7 && strings.EqualFold(value[:7], "Bearer ") {
+		return strings.TrimSpace(value[7:])
+	}
+	return ""
+}
+
 func inferObservationType(attrs map[string]string) string {
 	if attrs["agentotel.observation_type"] != "" {
 		return attrs["agentotel.observation_type"]
@@ -393,14 +428,6 @@ func firstSession(rows []observationRow) string {
 	for _, r := range rows {
 		if r.SessionID != "" {
 			return r.SessionID
-		}
-	}
-	return ""
-}
-func firstAgent(rows []observationRow) string {
-	for _, r := range rows {
-		if r.AgentName != "" {
-			return r.AgentName
 		}
 	}
 	return ""

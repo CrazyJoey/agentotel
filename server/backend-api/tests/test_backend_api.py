@@ -11,6 +11,7 @@ from backend_api import (
     aggregate_batch,
     api_key_prefix,
     authenticate_api_key,
+    api_key_filter_sql,
     normalize_phone,
     normalize_time_param,
     redact_sensitive,
@@ -19,6 +20,7 @@ from backend_api import (
     token_card,
     trace_card,
     trace_detail,
+    create_project_tables,
     transform_otlp_json,
 )
 
@@ -88,7 +90,8 @@ def test_transform_otlp_json_maps_spans_to_observations():
     assert root["span_id"] == "span_root"
     assert root["parent_span_id"] == ""
     assert root["session_id"] == "session_demo_001"
-    assert root["agent_name"] == "demo-agent"
+    assert "agent_name" not in root
+    assert root["api_key_id"] == ""
     assert root["kind"] == "INTERNAL"
     assert root["started_at"] == "2026-06-15 05:06:40.000"
     assert root["ended_at"] == "2026-06-15 05:06:41.200"
@@ -122,7 +125,8 @@ def test_aggregate_batch_creates_trace_and_session_latest_rows():
     assert trace["trace_id"] == "trace_demo_001"
     assert trace["session_id"] == "session_demo_001"
     assert trace["root_span_name"] == "agent.run"
-    assert trace["agent_name"] == "demo-agent"
+    assert "agent_name" not in trace
+    assert trace["api_key_id"] == ""
     assert trace["duration_ms"] == 2000
     assert trace["observation_count"] == 2
     assert trace["error_count"] == 1
@@ -509,6 +513,59 @@ def test_redact_sensitive_removes_headers_tokens_api_keys_password_credentials()
     assert redacted["events"][0]["token"] == "[REDACTED]"
 
 
+
+def test_transform_and_aggregate_use_api_key_id_not_agent_name():
+    rows = transform_otlp_json(SAMPLE_OTLP, api_key_id="key_demo")
+
+    assert len(rows) == 2
+    assert all(row["api_key_id"] == "key_demo" for row in rows)
+    assert all("agent_name" not in row for row in rows)
+
+    trace_rows, session_rows = aggregate_batch(rows)
+
+    assert trace_rows[0]["api_key_id"] == "key_demo"
+    assert session_rows[0]["api_key_id"] == "key_demo"
+    assert "agent_name" not in trace_rows[0]
+    assert "agent_name" not in session_rows[0]
+
+
+def test_api_key_filter_sql_builds_safe_where_in_and_rejects_empty():
+    assert api_key_filter_sql(["key_a", "key_b"]) == "api_key_id IN ('key_a', 'key_b')"
+    assert api_key_filter_sql(["", None, "key_a"]) == "api_key_id IN ('key_a')"
+    with pytest.raises(ValueError):
+        api_key_filter_sql([])
+
+
+def test_agent_scoped_sessions_query_filters_by_api_key_ids(monkeypatch):
+    captured = {}
+
+    def fake_query(query):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(backend_api, "ch_query_json", fake_query)
+
+    assert backend_api.latest_sessions(limit=5, api_key_ids=["key_a", "key_b"]) == []
+    assert "api_key_id IN ('key_a', 'key_b')" in captured["query"]
+    assert "agent_name" not in captured["query"]
+
+
+def test_create_project_tables_uses_api_key_id_and_no_agent_name(monkeypatch):
+    queries = []
+
+    def fake_post(query, data=None):
+        queries.append(query)
+        return ""
+
+    monkeypatch.setattr(backend_api, "ch_post", fake_post)
+
+    create_project_tables("agentotel_project_test")
+    ddl = "\n".join(queries)
+
+    assert "api_key_id" in ddl
+    assert "agent_name" not in ddl
+
+
 def test_phone_normalization_defaults_to_china_country_code():
     assert normalize_phone("13800000000", None) == ("+86", "13800000000", "+8613800000000")
     assert normalize_phone("+1 415-555-2671", "+86") == ("+1", "4155552671", "+14155552671")
@@ -519,17 +576,18 @@ def test_api_key_auth_uses_hash_only_and_returns_project_context(monkeypatch):
     expected_hash = backend_api.hash_secret(api_key)
     queries = []
 
-    def fake_query(query):
-        queries.append(query)
+    def fake_meta_query(query, args=()):
+        queries.append(query + " " + repr(args))
         assert api_key not in query
-        if "FROM agentotel_meta.project_api_keys" in query:
-            return [{"api_key_id": "key_1", "project_id": "proj_1", "status": "active"}]
-        if "FROM agentotel_meta.projects" in query:
+        assert all(api_key not in str(arg) for arg in args)
+        if "FROM project_api_keys" in query:
+            return [{"api_key_id": "key_1", "project_id": "proj_1", "agent_id": "agent_1", "status": "active"}]
+        if "FROM projects" in query:
             return [{"project_id": "proj_1", "owner_user_id": "user_1", "ck_database": "agentotel_project_proj_1", "status": "active"}]
         return []
 
-    monkeypatch.setattr(backend_api, "ch_query_json", fake_query)
-    monkeypatch.setattr(backend_api, "ch_post", lambda query, data=None: "")
+    monkeypatch.setattr(backend_api, "meta_query", fake_meta_query)
+    monkeypatch.setattr(backend_api, "meta_execute", lambda query, args=(): 1)
 
     context = authenticate_api_key("Bearer " + api_key)
 
@@ -542,15 +600,20 @@ def test_api_key_auth_uses_hash_only_and_returns_project_context(monkeypatch):
 def test_project_scoped_query_uses_project_database_and_requires_owner(monkeypatch):
     queries = []
 
-    def fake_query(query):
+    def fake_meta_query(query, args=()):
         queries.append(query)
-        if "FROM agentotel_meta.projects" in query:
+        if "FROM projects" in query:
             return [{"project_id": "proj_1", "owner_user_id": "user_1", "ck_database": "agentotel_project_proj_1", "status": "active"}]
+        return []
+
+    def fake_ch_query(query):
+        queries.append(query)
         if "FROM sessions" in query:
             return [{"session_id": "s1"}]
         return []
 
-    monkeypatch.setattr(backend_api, "ch_query_json", fake_query)
+    monkeypatch.setattr(backend_api, "meta_query", fake_meta_query)
+    monkeypatch.setattr(backend_api, "ch_query_json", fake_ch_query)
 
     ctx = backend_api.require_project_owner("proj_1", {"sub": "user_1"})
     with backend_api.project_database(ctx["ck_database"]):
@@ -558,7 +621,7 @@ def test_project_scoped_query_uses_project_database_and_requires_owner(monkeypat
         assert "database=agentotel_project_proj_1" in backend_api.CLICKHOUSE_URL
 
     assert rows == [{"session_id": "s1"}]
-    assert "agentotel_meta.projects" in queries[0]
+    assert "FROM projects" in queries[0]
 
     with pytest.raises(PermissionError):
         backend_api.require_project_owner("proj_1", {"sub": "user_2"})

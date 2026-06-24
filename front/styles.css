@@ -760,6 +760,7 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .waterfall-bar { position: absolute; top: 4px; bottom: 4px; min-width: 3px; border-radius: 999px; background: #7170ff; box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
 .waterfall-bar.llm { background: #8b8cff; }
 .waterfall-bar.tool { background: #22c55e; }
+.waterfall-bar.skill { background: linear-gradient(90deg, #d946ef, #a855f7); box-shadow: 0 0 0 1px rgba(255,255,255,.10) inset, 0 0 14px rgba(217,70,239,.35); }
 .waterfall-bar.event { background: #38bdf8; }
 .waterfall-bar.error { background: var(--red); }
 .waterfall-duration { color: #cfd4df; font-family: var(--mono); font-size: 10px; text-align: right; }
@@ -1037,6 +1038,7 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .status-pill.unset { color: var(--muted); }
 .type-pill { border-color: rgba(113,112,255,.25); background: var(--blue-soft); color: #d8dcff; }
 .type-pill.tool { border-color: rgba(251,191,36,.22); background: rgba(251,191,36,.1); color: #ffe3a0; }
+.type-pill.skill { border-color: rgba(217,70,239,.42); background: rgba(217,70,239,.14); color: #f5d0fe; box-shadow: 0 0 14px rgba(217,70,239,.16); }
 .type-pill.llm { border-color: rgba(113,112,255,.38); background: rgba(113,112,255,.14); color: #e2e4ff; }
 .type-pill.event { border-color: rgba(96,165,250,.28); background: rgba(96,165,250,.1); color: #cfe5ff; }
 .copy-button { padding: 3px 6px; border-radius: 6px; color: var(--subtle); font-family: var(--mono); font-size: 10px; }

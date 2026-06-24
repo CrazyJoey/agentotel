@@ -80,7 +80,7 @@ OBS_COLUMNS = [
     "duration_ms",
     "status_code",
     "status_message",
-    "agent_name",
+    "api_key_id",
     "model_provider",
     "model_name",
     "input_tokens",
@@ -102,7 +102,7 @@ TRACE_COLUMNS = [
     "trace_id",
     "session_id",
     "root_span_name",
-    "agent_name",
+    "api_key_id",
     "started_at",
     "ended_at",
     "duration_ms",
@@ -119,7 +119,7 @@ SESSION_COLUMNS = [
     "environment",
     "session_id",
     "user_id",
-    "agent_name",
+    "api_key_id",
     "started_at",
     "ended_at",
     "duration_ms",
@@ -285,8 +285,9 @@ def _scope_spans(resource_span: dict[str, Any]) -> list[dict[str, Any]]:
     return _first(resource_span, "scopeSpans", "scope_spans", "instrumentationLibrarySpans", "instrumentation_library_spans", default=[]) or []
 
 
-def transform_otlp_json(payload: dict[str, Any], project_id: str | None = None) -> list[dict[str, Any]]:
+def transform_otlp_json(payload: dict[str, Any], project_id: str | None = None, api_key_id: str | None = None) -> list[dict[str, Any]]:
     project_id = project_id or PROJECT_ID
+    api_key_id = stringify(api_key_id or "")
     rows: list[dict[str, Any]] = []
     for resource_span in _resource_spans(payload):
         resource = resource_span.get("resource") or {}
@@ -297,6 +298,9 @@ def transform_otlp_json(payload: dict[str, Any], project_id: str | None = None) 
             for span in scope_span.get("spans", []) or []:
                 attrs = attrs_to_map(span.get("attributes", []))
                 attrs = redact_sensitive(attrs)
+                attrs.pop("agent.name", None)
+                attrs.pop("agent_id", None)
+                attrs.pop("agent.id", None)
                 trace_id = stringify(_first(span, "traceId", "trace_id", default=""))
                 span_id = stringify(_first(span, "spanId", "span_id", default=""))
                 start_ns = _first(span, "startTimeUnixNano", "start_time_unix_nano", default=0)
@@ -320,7 +324,7 @@ def transform_otlp_json(payload: dict[str, Any], project_id: str | None = None) 
                     "duration_ms": max(0, (end_int - start_int) // 1_000_000),
                     "status_code": status_code,
                     "status_message": status_message,
-                    "agent_name": attrs.get("agent.name") or service_name,
+                    "api_key_id": api_key_id,
                     "model_provider": attrs.get("llm.provider") or attrs.get("provider.name", ""),
                     "model_name": attrs.get("llm.model") or attrs.get("provider.model") or attrs.get("model.name", ""),
                     "input_tokens": input_tokens,
@@ -362,7 +366,7 @@ def aggregate_batch(observations: list[dict[str, Any]], project_id: str | None =
                 "trace_id": trace_id,
                 "session_id": root.get("session_id") or next((r.get("session_id", "") for r in rows if r.get("session_id")), ""),
                 "root_span_name": root.get("name", ""),
-                "agent_name": root.get("agent_name") or next((r.get("agent_name", "") for r in rows if r.get("agent_name")), ""),
+                "api_key_id": root.get("api_key_id") or next((r.get("api_key_id", "") for r in rows if r.get("api_key_id")), ""),
                 "started_at": started_at,
                 "ended_at": ended_at,
                 "duration_ms": _duration_ms_from_dt64(started_at, ended_at),
@@ -388,7 +392,7 @@ def aggregate_batch(observations: list[dict[str, Any]], project_id: str | None =
                 "environment": ENVIRONMENT,
                 "session_id": session_id,
                 "user_id": next((r["attributes"].get("user.id", "") for r in rows if r.get("attributes", {}).get("user.id")), ""),
-                "agent_name": next((r.get("agent_name", "") for r in rows if r.get("agent_name")), ""),
+                "api_key_id": next((r.get("api_key_id", "") for r in rows if r.get("api_key_id")), ""),
                 "started_at": started_at,
                 "ended_at": ended_at,
                 "duration_ms": _duration_ms_from_dt64(started_at, ended_at),
@@ -447,15 +451,9 @@ def insert_json_each_row(table: str, columns: list[str], rows: list[dict[str, An
     ch_post(f"INSERT INTO {table} ({','.join(columns)}) FORMAT JSONEachRow", body)
 
 
-def ingest_payload(payload: dict[str, Any], project_id: str | None = None, agent_name: str | None = None) -> dict[str, Any]:
+def ingest_payload(payload: dict[str, Any], project_id: str | None = None, api_key_id: str | None = None) -> dict[str, Any]:
     project_id = project_id or PROJECT_ID
-    observations = transform_otlp_json(payload, project_id=project_id)
-    if agent_name:
-        for row in observations:
-            row["agent_name"] = agent_name
-            attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
-            attrs["agent.name"] = agent_name
-            row["attributes"] = attrs
+    observations = transform_otlp_json(payload, project_id=project_id, api_key_id=api_key_id)
     trace_rows, session_rows = aggregate_batch(observations, project_id=project_id)
     insert_json_each_row("observations", OBS_COLUMNS, observations)
     insert_json_each_row("traces", TRACE_COLUMNS, trace_rows)
@@ -651,32 +649,32 @@ def create_project_tables(database: str) -> None:
         ch_post("""
         CREATE TABLE IF NOT EXISTS sessions (
           project_id LowCardinality(String) DEFAULT 'default', environment LowCardinality(String) DEFAULT 'default', session_id String,
-          user_id String DEFAULT '', agent_name LowCardinality(String) DEFAULT '', started_at DateTime64(3, 'UTC'), ended_at DateTime64(3, 'UTC'),
+          user_id String DEFAULT '', api_key_id String, started_at DateTime64(3, 'UTC'), ended_at DateTime64(3, 'UTC'),
           duration_ms UInt64 DEFAULT 0, trace_count UInt32 DEFAULT 0, observation_count UInt32 DEFAULT 0, error_count UInt32 DEFAULT 0,
           input_tokens UInt32 DEFAULT 0, output_tokens UInt32 DEFAULT 0, total_tokens UInt32 DEFAULT 0,
           created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, session_id)
+        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, api_key_id, session_id)
         """)
         ch_post("""
         CREATE TABLE IF NOT EXISTS traces (
           project_id LowCardinality(String) DEFAULT 'default', environment LowCardinality(String) DEFAULT 'default', trace_id String, session_id String DEFAULT '',
-          root_span_name String DEFAULT '', agent_name LowCardinality(String) DEFAULT '', started_at DateTime64(3, 'UTC'), ended_at DateTime64(3, 'UTC'),
+          root_span_name String DEFAULT '', api_key_id String, started_at DateTime64(3, 'UTC'), ended_at DateTime64(3, 'UTC'),
           duration_ms UInt64 DEFAULT 0, observation_count UInt32 DEFAULT 0, error_count UInt32 DEFAULT 0, input_tokens UInt32 DEFAULT 0,
           output_tokens UInt32 DEFAULT 0, total_tokens UInt32 DEFAULT 0, status_code LowCardinality(String) DEFAULT 'UNSET',
           created_at DateTime64(3, 'UTC') DEFAULT now64(3), updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, trace_id)
+        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, api_key_id, trace_id)
         """)
         ch_post("""
         CREATE TABLE IF NOT EXISTS observations (
           project_id LowCardinality(String) DEFAULT 'default', environment LowCardinality(String) DEFAULT 'default', trace_id String, span_id String,
           parent_span_id String DEFAULT '', session_id String DEFAULT '', observation_type LowCardinality(String) DEFAULT 'span', name String,
           kind LowCardinality(String) DEFAULT 'INTERNAL', started_at DateTime64(3, 'UTC'), ended_at DateTime64(3, 'UTC'), duration_ms UInt64 DEFAULT 0,
-          status_code LowCardinality(String) DEFAULT 'UNSET', status_message String DEFAULT '', agent_name LowCardinality(String) DEFAULT '',
+          status_code LowCardinality(String) DEFAULT 'UNSET', status_message String DEFAULT '', api_key_id String,
           model_provider LowCardinality(String) DEFAULT '', model_name LowCardinality(String) DEFAULT '', input_tokens UInt32 DEFAULT 0, output_tokens UInt32 DEFAULT 0,
           total_tokens UInt32 DEFAULT 0, input_preview String DEFAULT '', output_preview String DEFAULT '', tool_name String DEFAULT '', tool_input_preview String DEFAULT '',
           tool_output_preview String DEFAULT '', attributes Map(String, String), resource_attributes Map(String, String), source LowCardinality(String) DEFAULT 'otel',
           ingested_at DateTime64(3, 'UTC') DEFAULT now64(3)
-        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, trace_id, started_at, span_id)
+        ) ENGINE = MergeTree PARTITION BY toDate(started_at) ORDER BY (project_id, environment, api_key_id, trace_id, started_at, span_id)
         """)
 
 
@@ -813,18 +811,48 @@ def _agent_slug(name: str, fallback: str = "agent") -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64] or fallback
 
 
-def agent_name_filter_sql(agent_name: str | None, column: str = "agent_name", include_legacy_default: bool = True) -> str | None:
-    clean = normalize_search_param(agent_name)
+def api_key_filter_sql(api_key_ids: list[str] | tuple[str, ...] | None, column: str = "api_key_id") -> str:
+    clean = [normalize_search_param(stringify(value)) for value in (api_key_ids or []) if normalize_search_param(stringify(value))]
     if not clean:
-        return None
-    if include_legacy_default and clean == "default":
-        return f"({column} = {sql_quote(clean)} OR {column} = '')"
-    return f"{column} = {sql_quote(clean)}"
+        raise ValueError("api_key_ids_required")
+    return f"{column} IN (" + ", ".join(sql_quote(value) for value in clean) + ")"
 
 
-def agent_name_condition(agent_name: str | None, column: str = "agent_name", prefix: str = " AND ") -> str:
-    expr = agent_name_filter_sql(agent_name, column)
-    return f"{prefix}{expr}" if expr else ""
+def api_key_condition(api_key_ids: list[str] | tuple[str, ...] | None, column: str = "api_key_id", prefix: str = " AND ") -> str:
+    return f"{prefix}{api_key_filter_sql(api_key_ids, column)}" if api_key_ids else ""
+
+
+def api_key_ids_for_agent(project_id: str, agent_id: str) -> list[str]:
+    rows = meta_query(
+        "SELECT api_key_id, key_plaintext FROM project_api_keys WHERE project_id=%s AND agent_id=%s AND status IN ('active', 'revoked') ORDER BY created_at ASC",
+        (project_id, agent_id),
+    )
+    # CK telemetry currently stores the normalized ingest isolation value in api_key_id.
+    # In the direct Collector path this value is the OTLP Authorization Bearer token
+    # (key_plaintext). Keep metadata api_key_id as a fallback for older backend-ingest rows.
+    values: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for value in (stringify(row.get("key_plaintext")), stringify(row.get("api_key_id"))):
+            if value and value not in seen:
+                values.append(value)
+                seen.add(value)
+    return values
+
+
+def all_project_query_api_key_ids(project_id: str) -> list[str]:
+    rows = meta_query(
+        "SELECT api_key_id, key_plaintext FROM project_api_keys WHERE project_id=%s AND status IN ('active', 'revoked') ORDER BY created_at ASC",
+        (project_id,),
+    )
+    values: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for value in (stringify(row.get("key_plaintext")), stringify(row.get("api_key_id"))):
+            if value and value not in seen:
+                values.append(value)
+                seen.add(value)
+    return values or ["__no_api_key__"]
 
 
 def active_agent_rows(project_id: str) -> list[dict[str, Any]]:
@@ -1011,10 +1039,7 @@ def authenticate_api_key(auth_header: str | None) -> dict[str, Any]:
         raise PermissionError("invalid_api_key")
     meta_execute("UPDATE project_api_keys SET last_used_at=NOW(3) WHERE api_key_id=%s", (stringify(key_row.get("api_key_id")),))
     project = projects[0]
-    agent = agent_for_project(stringify(project.get("project_id")), stringify(key_row.get("agent_id")))
-    if not agent and not stringify(key_row.get("agent_id")):
-        agent = ensure_default_agent(stringify(project.get("project_id")))
-    return {"api_key_id": key_row.get("api_key_id"), "project_id": project.get("project_id"), "ck_database": project.get("ck_database"), "project": project, "agent_id": key_row.get("agent_id", ""), "agent_name": agent.get("name") if agent else "default"}
+    return {"api_key_id": key_row.get("api_key_id"), "project_id": project.get("project_id"), "ck_database": project.get("ck_database"), "project": project, "agent_id": key_row.get("agent_id", "")}
 
 
 def list_api_keys(project_id: str) -> list[dict[str, Any]]:
@@ -1058,10 +1083,10 @@ def time_filters(column: str, from_time: str | None, to_time: str | None) -> lis
     return filters
 
 
-def session_card(from_time: str | None, to_time: str | None, agent_name: str | None = None) -> dict[str, Any]:
+def session_card(from_time: str | None, to_time: str | None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     from_expr = f"parseDateTime64BestEffort({sql_quote(from_time)}, 3)" if from_time else "now64(3) - INTERVAL 24 HOUR"
     to_expr = f"parseDateTime64BestEffort({sql_quote(to_time)}, 3)" if to_time else "now64(3)"
-    agent_where = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     session_rows = ch_query_json(
         f"""
         WITH bounds AS (
@@ -1075,7 +1100,7 @@ def session_card(from_time: str | None, to_time: str | None, agent_name: str | N
                 session_id,
                 max(error_count) AS error_count
             FROM sessions, bounds
-            WHERE session_id != ''{agent_where}
+            WHERE session_id != ''{api_key_where}
               AND ended_at >= from_ts
               AND started_at < to_ts
             GROUP BY session_id
@@ -1085,7 +1110,7 @@ def session_card(from_time: str | None, to_time: str | None, agent_name: str | N
                 session_id,
                 max(error_count) AS error_count
             FROM sessions, bounds
-            WHERE session_id != ''{agent_where}
+            WHERE session_id != ''{api_key_where}
               AND ended_at >= previous_from_ts
               AND started_at < from_ts
             GROUP BY session_id
@@ -1100,7 +1125,7 @@ def session_card(from_time: str | None, to_time: str | None, agent_name: str | N
         WITH {from_expr} AS from_ts, {to_expr} AS to_ts
         SELECT session_id, sum(duration_ms) AS duration_ms
         FROM traces
-        WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
+        WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
         GROUP BY session_id
         """
     )
@@ -1109,7 +1134,7 @@ def session_card(from_time: str | None, to_time: str | None, agent_name: str | N
         WITH {from_expr} AS from_ts, {to_expr} AS to_ts
         SELECT session_id, sum(total_tokens) AS total_tokens
         FROM traces
-        WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
+        WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
         GROUP BY session_id
         """
     )
@@ -1123,7 +1148,7 @@ def session_card(from_time: str | None, to_time: str | None, agent_name: str | N
         FROM (
             SELECT intDiv(toUnixTimestamp64Milli(started_at), 60000) * 60000 AS t
             FROM sessions
-            WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
+            WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
         )
         GROUP BY t
         ORDER BY t ASC
@@ -1210,10 +1235,10 @@ def _round_cny(value: float) -> float:
     return round(float(value), 6)
 
 
-def token_card(from_time: str | None, to_time: str | None, agent_name: str | None = None) -> dict[str, Any]:
+def token_card(from_time: str | None, to_time: str | None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     from_expr = f"parseDateTime64BestEffort({sql_quote(from_time)}, 3)" if from_time else "now64(3) - INTERVAL 24 HOUR"
     to_expr = f"parseDateTime64BestEffort({sql_quote(to_time)}, 3)" if to_time else "now64(3)"
-    agent_where = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     kpi_rows = ch_query_json(
         f"""
         WITH bounds AS (
@@ -1229,7 +1254,7 @@ def token_card(from_time: str | None, to_time: str | None, agent_name: str | Non
                 sum(output_tokens) AS output_tokens,
                 sum(total_tokens) AS total_tokens
             FROM observations, bounds
-            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){agent_where}
+            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){api_key_where}
               AND started_at >= from_ts
               AND started_at < to_ts
         ), previous_llm_calls AS (
@@ -1240,7 +1265,7 @@ def token_card(from_time: str | None, to_time: str | None, agent_name: str | Non
                 sum(output_tokens) AS output_tokens,
                 sum(total_tokens) AS total_tokens
             FROM observations, bounds
-            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){agent_where}
+            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){api_key_where}
               AND started_at >= previous_from_ts
               AND started_at < from_ts
         )
@@ -1260,7 +1285,7 @@ def token_card(from_time: str | None, to_time: str | None, agent_name: str | Non
             sum(output_tokens) AS output_tokens,
             sum(total_tokens) AS total_tokens
         FROM observations
-        WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){agent_where} AND started_at >= from_ts AND started_at < to_ts
+        WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){api_key_where} AND started_at >= from_ts AND started_at < to_ts
         GROUP BY model_provider, model_name
         ORDER BY total_tokens DESC
         """
@@ -1281,7 +1306,7 @@ def token_card(from_time: str | None, to_time: str | None, agent_name: str | Non
                 output_tokens,
                 total_tokens
             FROM observations
-            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){agent_where} AND started_at >= from_ts AND started_at < to_ts
+            WHERE (name = 'llm.call' OR observation_type = 'llm.call' OR observation_type = 'llm'){api_key_where} AND started_at >= from_ts AND started_at < to_ts
         )
         GROUP BY t
         ORDER BY t ASC
@@ -1387,37 +1412,34 @@ def top_sessions(
     limit: int = 5,
     offset: int = 0,
     query: str | None = None,
-    agent_name: str | None = None,
+    api_key_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     sort_by = normalize_top_session_sort(sort_by)
     sort_column, sort_label = TOP_SESSION_SORTS[sort_by]
     limit = normalize_limit_param(str(limit), 5, 100)
     offset = max(0, to_int(offset))
     query = normalize_search_param(query)
-    agent_name = normalize_search_param(agent_name)
-    agent_where = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     query_limit = limit + 1
     from_expr = f"parseDateTime64BestEffort({sql_quote(from_time)}, 3)" if from_time else "now64(3) - INTERVAL 24 HOUR"
     to_expr = f"parseDateTime64BestEffort({sql_quote(to_time)}, 3)" if to_time else "now64(3)"
     query_literal = sql_quote(query) if query else "''"
     outer_filters = []
-    if agent_name:
-        outer_filters.append(agent_name_filter_sql(agent_name) or "")
     if sort_by == "errors":
         outer_filters.append("error_count > 0")
     if query:
         outer_filters.append(
             "(positionCaseInsensitive(session_id, {q}) > 0 OR "
-            "positionCaseInsensitive(agent_name, {q}) > 0 OR "
+            ""
             "session_id IN ("
             "SELECT DISTINCT session_id FROM observations "
-            "WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts AND ("
+            "WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts AND ("
             "positionCaseInsensitive(input_preview, {q}) > 0 OR "
             "positionCaseInsensitive(tool_input_preview, {q}) > 0 OR "
             "positionCaseInsensitive(output_preview, {q}) > 0 OR "
             "positionCaseInsensitive(tool_output_preview, {q}) > 0"
             ")"
-            "))".format(q=query_literal, agent_where=agent_where)
+            "))".format(q=query_literal, api_key_where=api_key_where)
         )
     outer_filter = "WHERE " + " AND ".join(outer_filters) if outer_filters else ""
     rows = ch_query_json(
@@ -1428,8 +1450,7 @@ def top_sessions(
             FROM (
                 SELECT
                     session_id,
-                    anyLast(agent_name) AS agent_name,
-                    min(started_at) AS started_at,
+                                        min(started_at) AS started_at,
                     max(ended_at) AS ended_at,
                     sum(duration_ms) AS duration_ms,
                     uniqExact(trace_id) AS trace_count,
@@ -1442,8 +1463,7 @@ def top_sessions(
                 FROM (
                     SELECT *, row_number() OVER (PARTITION BY project_id, environment, trace_id ORDER BY updated_at DESC) AS rn
                     FROM traces
-                    WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
-                      {f"AND agent_name = {sql_quote(agent_name)}" if agent_name else ""}
+                    WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
                 )
                 WHERE rn = 1
                 GROUP BY session_id
@@ -1474,7 +1494,7 @@ def top_sessions(
                     positionCaseInsensitive(tool_name, 'vector') > 0
                 ) AS knowledge_call_count
             FROM observations
-            WHERE session_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
+            WHERE session_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
             GROUP BY session_id
         )
         SELECT ranked.*, previews.input_preview, previews.output_preview, previews.tool_input_preview, previews.tool_output_preview,
@@ -1502,7 +1522,7 @@ def top_traces(
     offset: int = 0,
     query: str | None = None,
     session_id: str | None = None,
-    agent_name: str | None = None,
+    api_key_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     sort_by = normalize_top_rank_sort(sort_by)
     sort_column, sort_label = TOP_RANK_SORTS[sort_by]
@@ -1510,16 +1530,13 @@ def top_traces(
     offset = max(0, to_int(offset))
     query = normalize_search_param(query)
     session_id = normalize_search_param(session_id)
-    agent_name = normalize_search_param(agent_name)
-    agent_where = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     query_limit = limit + 1
     from_expr = f"parseDateTime64BestEffort({sql_quote(from_time)}, 3)" if from_time else "now64(3) - INTERVAL 24 HOUR"
     to_expr = f"parseDateTime64BestEffort({sql_quote(to_time)}, 3)" if to_time else "now64(3)"
     query_literal = sql_quote(query) if query else "''"
     session_literal = sql_quote(session_id) if session_id else "''"
     outer_filters = []
-    if agent_name:
-        outer_filters.append(agent_name_filter_sql(agent_name) or "")
     if sort_by == "errors":
         outer_filters.append("error_count > 0")
     if session_id:
@@ -1529,16 +1546,16 @@ def top_traces(
             "(positionCaseInsensitive(trace_id, {q}) > 0 OR "
             "positionCaseInsensitive(session_id, {q}) > 0 OR "
             "positionCaseInsensitive(root_span_name, {q}) > 0 OR "
-            "positionCaseInsensitive(agent_name, {q}) > 0 OR "
+            ""
             "trace_id IN ("
             "SELECT DISTINCT trace_id FROM observations "
-            "WHERE trace_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts AND ("
+            "WHERE trace_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts AND ("
             "positionCaseInsensitive(input_preview, {q}) > 0 OR "
             "positionCaseInsensitive(tool_input_preview, {q}) > 0 OR "
             "positionCaseInsensitive(output_preview, {q}) > 0 OR "
             "positionCaseInsensitive(tool_output_preview, {q}) > 0"
             ")"
-            "))".format(q=query_literal, agent_where=agent_where)
+            "))".format(q=query_literal, api_key_where=api_key_where)
         )
     outer_filter = "WHERE " + " AND ".join(outer_filters) if outer_filters else ""
     rows = ch_query_json(
@@ -1553,7 +1570,6 @@ def top_traces(
                     trace_id,
                     session_id,
                     root_span_name,
-                    agent_name,
                     started_at,
                     ended_at,
                     duration_ms,
@@ -1567,8 +1583,7 @@ def top_traces(
                 FROM (
                     SELECT *, row_number() OVER (PARTITION BY project_id, environment, trace_id ORDER BY updated_at DESC) AS rn
                     FROM traces
-                    WHERE trace_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
-                      {f"AND agent_name = {sql_quote(agent_name)}" if agent_name else ""}
+                    WHERE trace_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
                 )
                 WHERE rn = 1
             )
@@ -1598,8 +1613,7 @@ def top_traces(
                     positionCaseInsensitive(tool_name, 'vector') > 0
                 ) AS knowledge_call_count
             FROM observations
-            WHERE trace_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
-              {f"AND agent_name = {sql_quote(agent_name)}" if agent_name else ""}
+            WHERE trace_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
             GROUP BY trace_id
         )
         SELECT ranked.*, previews.input_preview, previews.output_preview, previews.tool_input_preview, previews.tool_output_preview,
@@ -1619,10 +1633,10 @@ def top_traces(
     }
 
 
-def trace_card(from_time: str | None, to_time: str | None, agent_name: str | None = None) -> dict[str, Any]:
+def trace_card(from_time: str | None, to_time: str | None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     from_expr = f"parseDateTime64BestEffort({sql_quote(from_time)}, 3)" if from_time else "now64(3) - INTERVAL 24 HOUR"
     to_expr = f"parseDateTime64BestEffort({sql_quote(to_time)}, 3)" if to_time else "now64(3)"
-    agent_where = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     kpi_rows = ch_query_json(
         f"""
         WITH bounds AS (
@@ -1638,7 +1652,7 @@ def trace_card(from_time: str | None, to_time: str | None, agent_name: str | Non
                 max(total_tokens) AS total_tokens,
                 max(error_count) AS error_count
             FROM traces, bounds
-            WHERE trace_id != ''{agent_where}
+            WHERE trace_id != ''{api_key_where}
               AND started_at >= from_ts
               AND started_at < to_ts
             GROUP BY trace_id
@@ -1650,7 +1664,7 @@ def trace_card(from_time: str | None, to_time: str | None, agent_name: str | Non
                 max(total_tokens) AS total_tokens,
                 max(error_count) AS error_count
             FROM traces, bounds
-            WHERE trace_id != ''{agent_where}
+            WHERE trace_id != ''{api_key_where}
               AND started_at >= previous_from_ts
               AND started_at < from_ts
             GROUP BY trace_id
@@ -1679,7 +1693,7 @@ def trace_card(from_time: str | None, to_time: str | None, agent_name: str | Non
         FROM (
             SELECT trace_id, intDiv(toUnixTimestamp64Milli(started_at), 60000) * 60000 AS t
             FROM traces
-            WHERE trace_id != ''{agent_where} AND started_at >= from_ts AND started_at < to_ts
+            WHERE trace_id != ''{api_key_where} AND started_at >= from_ts AND started_at < to_ts
         )
         GROUP BY t
         ORDER BY t ASC
@@ -1715,19 +1729,27 @@ def parse_time_range(params: dict[str, list[str]]) -> tuple[str | None, str | No
     )
 
 
-def latest_sessions(limit: int = 100, from_time: str | None = None, to_time: str | None = None, agent_name: str | None = None) -> list[dict[str, Any]]:
+def request_api_key_ids(project_id: str, params: dict[str, list[str]]) -> list[str] | None:
+    agent_id = normalize_search_param((params.get("agent_id") or [""])[0])
+    if not agent_id:
+        return None
+    ids = api_key_ids_for_agent(project_id, agent_id)
+    return ids or ["__no_api_key__"]
+
+
+def latest_sessions(limit: int = 100, from_time: str | None = None, to_time: str | None = None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     filters = time_filters("started_at", from_time, to_time)
-    if agent_name:
-        filters.append(agent_name_filter_sql(agent_name) or "")
+    if api_key_ids:
+        filters.append(api_key_filter_sql(api_key_ids))
     where = "WHERE " + " AND ".join(filters) if filters else ""
     obs_filters = time_filters("started_at", from_time, to_time)
-    if agent_name:
-        obs_filters.append(agent_name_filter_sql(agent_name) or "")
+    if api_key_ids:
+        obs_filters.append(api_key_filter_sql(api_key_ids))
     obs_time_where = " AND " + " AND ".join(obs_filters) if obs_filters else ""
     return ch_query_json(
         f"""
         WITH latest AS (
-            SELECT project_id, environment, session_id, user_id, agent_name, started_at, ended_at, duration_ms,
+            SELECT project_id, environment, session_id, user_id, api_key_id, started_at, ended_at, duration_ms,
                    trace_count, observation_count, error_count, input_tokens, output_tokens, total_tokens, created_at, updated_at
             FROM (
                 SELECT *, row_number() OVER (PARTITION BY project_id, environment, session_id ORDER BY updated_at DESC) AS rn
@@ -1770,20 +1792,20 @@ def latest_sessions(limit: int = 100, from_time: str | None = None, to_time: str
     )
 
 
-def trace_detail(trace_id: str, from_time: str | None = None, to_time: str | None = None, agent_name: str | None = None) -> dict[str, Any]:
+def trace_detail(trace_id: str, from_time: str | None = None, to_time: str | None = None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     quoted = sql_quote(trace_id)
-    agent_filter = agent_name_condition(agent_name)
+    api_key_where = api_key_condition(api_key_ids)
     obs_base_filters = time_filters("started_at", from_time, to_time)
-    if agent_name:
-        obs_base_filters.append(agent_name_filter_sql(agent_name) or "")
+    if api_key_ids:
+        obs_base_filters.append(api_key_filter_sql(api_key_ids))
     obs_filters = " AND ".join(obs_base_filters)
     obs_time_where = f" AND {obs_filters}" if obs_filters else ""
     summaries = ch_query_json(
         f"""
-        SELECT project_id, environment, trace_id, session_id, root_span_name, agent_name, started_at, ended_at,
+        SELECT project_id, environment, trace_id, session_id, root_span_name, api_key_id, started_at, ended_at,
                duration_ms, observation_count, error_count, input_tokens, output_tokens, total_tokens, status_code, created_at, updated_at
         FROM traces
-        WHERE trace_id = {quoted}{agent_filter}
+        WHERE trace_id = {quoted}{api_key_where}
         ORDER BY updated_at DESC
         LIMIT 1
         """
@@ -1791,7 +1813,7 @@ def trace_detail(trace_id: str, from_time: str | None = None, to_time: str | Non
     observations = ch_query_json(
         f"""
         SELECT project_id, environment, trace_id, span_id, parent_span_id, session_id, observation_type, name, kind,
-               started_at, ended_at, duration_ms, status_code, status_message, agent_name, model_provider, model_name,
+               started_at, ended_at, duration_ms, status_code, status_message, api_key_id, model_provider, model_name,
                input_tokens, output_tokens, total_tokens, input_preview, output_preview, tool_name, tool_input_preview,
                tool_output_preview, attributes, resource_attributes, source, ingested_at
         FROM observations
@@ -1803,8 +1825,8 @@ def trace_detail(trace_id: str, from_time: str | None = None, to_time: str | Non
     return {"trace": summaries[0] if summaries else None, "observations": observations}
 
 
-def search_by_session(session_id: str, from_time: str | None = None, to_time: str | None = None, agent_name: str | None = None) -> list[dict[str, Any]]:
-    traces = top_traces(from_time, to_time, "latest", 200, 0, query=None, session_id=session_id, agent_name=agent_name).get("traces", [])
+def search_by_session(session_id: str, from_time: str | None = None, to_time: str | None = None, api_key_ids: list[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    traces = top_traces(from_time, to_time, "latest", 200, 0, query=None, session_id=session_id, api_key_ids=api_key_ids).get("traces", [])
     return sorted(traces, key=lambda row: stringify(row.get("started_at") or row.get("updated_at") or row.get("ended_at") or ""))
 
 
@@ -1847,43 +1869,45 @@ class Handler(BaseHTTPRequestHandler):
         project = require_project_owner(project_id, jwt_payload)
         params = urllib.parse.parse_qs(parsed.query)
         from_time, to_time = parse_time_range(params)
-        agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+        api_key_ids = request_api_key_ids(project_id, params)
+        if api_key_ids is None:
+            api_key_ids = all_project_query_api_key_ids(project_id)
         with project_database(stringify(project["ck_database"])):
             if m:
                 kind = m.group(2)
                 if kind == "sessions":
                     limit = normalize_limit_param((params.get("limit") or [None])[0], 100)
-                    self._send_json(200, {"sessions": latest_sessions(limit, from_time, to_time, agent_name=agent_name), "meta": time_meta(from_time, to_time, limit)})
+                    self._send_json(200, {"sessions": latest_sessions(limit, from_time, to_time, api_key_ids=api_key_ids), "meta": time_meta(from_time, to_time, limit)})
                 elif kind == "traces":
                     sort_by = (params.get("sort") or ["latest"])[0]
                     limit = normalize_limit_param((params.get("limit") or ["100"])[0], 100, 500)
                     offset = max(0, to_int((params.get("offset") or ["0"])[0]))
                     query = (params.get("q") or params.get("query") or [""])[0]
                     session_id = (params.get("session_id") or [""])[0]
-                    self._send_json(200, top_traces(from_time, to_time, sort_by, limit, offset, query=query, session_id=session_id, agent_name=agent_name))
+                    self._send_json(200, top_traces(from_time, to_time, sort_by, limit, offset, query=query, session_id=session_id, api_key_ids=api_key_ids))
                 else:
                     session_id = (params.get("session_id") or [""])[0]
                     if not session_id:
                         self._send_json(400, {"error": "missing_session_id"})
                     else:
-                        self._send_json(200, {"traces": search_by_session(session_id, from_time, to_time, agent_name=agent_name), "meta": time_meta(from_time, to_time)})
+                        self._send_json(200, {"traces": search_by_session(session_id, from_time, to_time, api_key_ids=api_key_ids), "meta": time_meta(from_time, to_time)})
             elif detail_m:
                 trace_id = urllib.parse.unquote(detail_m.group(2))
-                detail = trace_detail(trace_id, from_time, to_time, agent_name=agent_name)
+                detail = trace_detail(trace_id, from_time, to_time, api_key_ids=api_key_ids)
                 detail["meta"] = time_meta(from_time, to_time)
                 self._send_json(200 if detail["trace"] or detail["observations"] else 404, detail if detail["trace"] or detail["observations"] else {"error": "trace_not_found", "trace_id": trace_id})
             else:
                 endpoint = overview_m.group(2)
                 if endpoint == "session-card":
-                    self._send_json(200, session_card(from_time, to_time, agent_name=agent_name))
+                    self._send_json(200, session_card(from_time, to_time, api_key_ids=api_key_ids))
                 elif endpoint == "trace-card":
-                    self._send_json(200, trace_card(from_time, to_time, agent_name=agent_name))
+                    self._send_json(200, trace_card(from_time, to_time, api_key_ids=api_key_ids))
                 elif endpoint == "token-card":
-                    self._send_json(200, token_card(from_time, to_time, agent_name=agent_name))
+                    self._send_json(200, token_card(from_time, to_time, api_key_ids=api_key_ids))
                 elif endpoint == "top-sessions":
-                    self._send_json(200, top_sessions(from_time, to_time, (params.get("sort") or ["latest"])[0], normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100), max(0, to_int((params.get("offset") or ["0"])[0])), query=(params.get("q") or params.get("query") or [""])[0], agent_name=agent_name))
+                    self._send_json(200, top_sessions(from_time, to_time, (params.get("sort") or ["latest"])[0], normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100), max(0, to_int((params.get("offset") or ["0"])[0])), query=(params.get("q") or params.get("query") or [""])[0], api_key_ids=api_key_ids))
                 else:
-                    self._send_json(200, top_traces(from_time, to_time, (params.get("sort") or ["latest"])[0], normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100), max(0, to_int((params.get("offset") or ["0"])[0])), query=(params.get("q") or params.get("query") or [""])[0], session_id=(params.get("session_id") or [""])[0], agent_name=agent_name))
+                    self._send_json(200, top_traces(from_time, to_time, (params.get("sort") or ["latest"])[0], normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100), max(0, to_int((params.get("offset") or ["0"])[0])), query=(params.get("q") or params.get("query") or [""])[0], session_id=(params.get("session_id") or [""])[0], api_key_ids=api_key_ids))
         return True
 
     def do_GET(self) -> None:
@@ -1913,28 +1937,28 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/sessions":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+                api_key_ids = None
                 limit = normalize_limit_param((params.get("limit") or [None])[0], 100)
-                self._send_json(200, {"sessions": latest_sessions(limit, from_time, to_time, agent_name=agent_name), "meta": time_meta(from_time, to_time, limit)})
+                self._send_json(200, {"sessions": latest_sessions(limit, from_time, to_time, api_key_ids=api_key_ids), "meta": time_meta(from_time, to_time, limit)})
             elif parsed.path == "/overview/session-card":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
-                self._send_json(200, session_card(from_time, to_time, agent_name=agent_name))
+                api_key_ids = None
+                self._send_json(200, session_card(from_time, to_time, api_key_ids=api_key_ids))
             elif parsed.path == "/overview/trace-card":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
-                self._send_json(200, trace_card(from_time, to_time, agent_name=agent_name))
+                api_key_ids = None
+                self._send_json(200, trace_card(from_time, to_time, api_key_ids=api_key_ids))
             elif parsed.path == "/overview/token-card":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
-                self._send_json(200, token_card(from_time, to_time, agent_name=agent_name))
+                api_key_ids = None
+                self._send_json(200, token_card(from_time, to_time, api_key_ids=api_key_ids))
             elif parsed.path == "/overview/top-sessions":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+                api_key_ids = None
                 sort_by = (params.get("sort") or ["latest"])[0]
                 limit = normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100)
                 offset = max(0, to_int((params.get("offset") or ["0"])[0]))
@@ -1943,19 +1967,19 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/overview/top-traces":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+                api_key_ids = None
                 sort_by = (params.get("sort") or ["latest"])[0]
                 limit = normalize_limit_param((params.get("limit") or ["5"])[0], 5, 100)
                 offset = max(0, to_int((params.get("offset") or ["0"])[0]))
                 query = (params.get("q") or params.get("query") or [""])[0]
                 session_id = (params.get("session_id") or [""])[0]
-                self._send_json(200, top_traces(from_time, to_time, sort_by, limit, offset, query=query, session_id=session_id, agent_name=agent_name))
+                self._send_json(200, top_traces(from_time, to_time, sort_by, limit, offset, query=query, session_id=session_id, api_key_ids=api_key_ids))
             elif parsed.path.startswith("/traces/"):
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+                api_key_ids = None
                 trace_id = urllib.parse.unquote(parsed.path[len("/traces/") :])
-                detail = trace_detail(trace_id, from_time, to_time, agent_name=agent_name)
+                detail = trace_detail(trace_id, from_time, to_time, api_key_ids=api_key_ids)
                 detail["meta"] = time_meta(from_time, to_time)
                 if detail["trace"] is None and not detail["observations"]:
                     self._send_json(404, {"error": "trace_not_found", "trace_id": trace_id})
@@ -1964,12 +1988,12 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/search":
                 params = urllib.parse.parse_qs(parsed.query)
                 from_time, to_time = parse_time_range(params)
-                agent_name = normalize_search_param((params.get("agent_name") or [""])[0])
+                api_key_ids = None
                 session_id = (params.get("session_id") or [""])[0]
                 if not session_id:
                     self._send_json(400, {"error": "missing_session_id"})
                 else:
-                    self._send_json(200, {"traces": search_by_session(session_id, from_time, to_time, agent_name=agent_name), "meta": time_meta(from_time, to_time)})
+                    self._send_json(200, {"traces": search_by_session(session_id, from_time, to_time, api_key_ids=api_key_ids), "meta": time_meta(from_time, to_time)})
             else:
                 self._send_json(404, {"error": "not_found"})
         except ValueError as exc:
@@ -2028,7 +2052,7 @@ class Handler(BaseHTTPRequestHandler):
                 api_context = authenticate_api_key(self.headers.get("Authorization"))
                 payload = self._read_json_body()
                 with project_database(stringify(api_context["ck_database"])):
-                    self._send_json(200, ingest_payload(payload, project_id=stringify(api_context["project_id"]), agent_name=stringify(api_context.get("agent_name"))))
+                    self._send_json(200, ingest_payload(payload, project_id=stringify(api_context["project_id"]), api_key_id=stringify(api_context.get("api_key_id"))))
                 return
             self._send_json(404, {"error": "not_found"})
         except json.JSONDecodeError as exc:

@@ -30,48 +30,48 @@ const API = {
   sessions: () => {
     const params = new URLSearchParams({ limit: "100" });
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     return withTime(`${projectPath("/sessions")}?${params.toString()}`);
   },
   sessionCard: () => {
     const params = new URLSearchParams();
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return withTime(`${projectPath("/overview/session-card")}${suffix}`);
   },
   traceCard: () => {
     const params = new URLSearchParams();
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return withTime(`${projectPath("/overview/trace-card")}${suffix}`);
   },
   tokenCard: () => {
     const params = new URLSearchParams();
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return withTime(`${projectPath("/overview/token-card")}${suffix}`);
   },
   topSessions: (sort = state.topSessionsSort) => {
     const params = new URLSearchParams({ sort, limit: "5" });
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     return withTime(`${projectPath("/overview/top-sessions")}?${params.toString()}`);
   },
   sessionPageSessions: () => {
     const params = new URLSearchParams({ sort: state.sessionPageSort, limit: String(state.sessionPageSize), offset: String((state.sessionPagePage - 1) * state.sessionPageSize) });
     if (state.sessionPageQuery.trim()) params.set("q", state.sessionPageQuery.trim());
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     if (state.sessionPageStatusFilter === "errors") params.set("sort", "errors");
     return withTime(`${projectPath("/sessions")}?${params.toString()}`);
   },
   topTraces: (sort = state.topTracesSort) => {
     const params = new URLSearchParams({ sort, limit: "5" });
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     return withTime(`${projectPath("/traces")}?${params.toString()}`);
   },
   tracePageTraces: () => {
@@ -79,20 +79,20 @@ const API = {
     const query = state.tracePageQuery.trim();
     if (query) params.set("q", query);
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     if (state.tracePageStatusFilter === "errors") params.set("sort", "errors");
     return withTime(`${projectPath("/traces")}?${params.toString()}`);
   },
   search: (sessionId) => {
     const params = new URLSearchParams({ session_id: sessionId });
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     return withTime(`${projectPath("/search")}?${params.toString()}`);
   },
   trace: (traceId) => {
     const params = new URLSearchParams();
     const agent = selectedAgent();
-    if (agent?.name) params.set("agent_name", agent.name);
+    if (agent?.id) params.set("agent_id", agent.id);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return withTime(`${projectPath(`/traces/${encodeURIComponent(traceId)}`)}${suffix}`);
   }
@@ -344,6 +344,7 @@ function statusLabel(status) {
 }
 function typeClass(type) {
   const raw = String(type || "span").toLowerCase();
+  if (raw.includes("skill")) return "skill";
   if (raw.includes("llm")) return "llm";
   if (raw.includes("tool")) return "tool";
   if (raw.includes("event")) return "event";
@@ -544,6 +545,7 @@ async function loadAgents() {
     state.agentsError = error instanceof Error ? error.message : String(error);
   }
   renderAgents();
+  renderApiKeys();
   renderIntegrationPanel();
 }
 async function createAgent() {
@@ -760,7 +762,8 @@ async function switchProject(projectId) {
   state.sessionPageSessions = [];
   state.tracePageTraces = [];
   renderProjectSelector();
-  await Promise.all([loadApiKeys(), loadAgents(), loadSessions({ silent: false })]);
+  await loadAgents();
+  await Promise.all([loadApiKeys(), loadSessions({ silent: false })]);
   renderIntegrationPanel();
 }
 async function loadApiKeys() {
@@ -835,7 +838,7 @@ function renderApiKeys() {
 function filteredSessions() {
   const query = state.query.trim().toLowerCase();
   return state.sessions.filter((session) => {
-    const searchable = [session.session_id, session.agent_name, session.input_preview, session.output_preview, session.tool_input_preview]
+    const searchable = [session.session_id, session.input_preview, session.output_preview, session.tool_input_preview]
       .map((value) => String(value || "").toLowerCase())
       .join(" ");
     const matchesQuery = !query || searchable.includes(query);
@@ -846,7 +849,7 @@ function filteredSessions() {
 function filteredTraces() {
   const query = state.query.trim().toLowerCase();
   return state.traces.filter((trace) => {
-    const searchable = [trace.trace_id, trace.root_span_name, trace.agent_name, trace.input_preview, trace.output_preview, trace.tool_input_preview]
+    const searchable = [trace.trace_id, trace.root_span_name, trace.input_preview, trace.output_preview, trace.tool_input_preview]
       .map((value) => String(value || "").toLowerCase())
       .join(" ");
     const matchesQuery = !query || searchable.includes(query);
@@ -905,7 +908,7 @@ function renderHermesTraceStatus() {
   const dot = $("hermes-trace-dot");
   if (!status || !hint || !dot) return;
   const hermesSessions = state.sessions.filter((session) => {
-    const text = [session.agent_name, session.session_id, session.service_name, session.source]
+    const text = [session.session_id, session.service_name, session.source]
       .map((value) => String(value || "").toLowerCase())
       .join(" ");
     return text.includes("hermes");
@@ -1138,6 +1141,73 @@ function copyButton(value, label = "复制") {
 }
 function statusPill(status) { return `<span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabel(status))}</span>`; }
 function typePill(type) { const label = pick(type, "span"); return `<span class="type-pill ${typeClass(label)}">${escapeHtml(label)}</span>`; }
+function parsePreviewJson(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  const raw = String(value).trim();
+  if (!raw.startsWith("{") && !raw.startsWith("[")) return null;
+  try { return JSON.parse(raw); } catch (_) { return null; }
+}
+function fileBasename(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.split(/[\\/]/).filter(Boolean).pop() || raw;
+}
+function skillCallInfo(obs) {
+  const toolName = String(pick(obs?.tool_name, obs?.name, "")).toLowerCase();
+  if (toolName !== "skill_view") return null;
+  const input = parsePreviewJson(obs?.tool_input_preview) || {};
+  const filePath = String(pick(input.file_path, input.filePath, ""));
+  const skillName = String(pick(input.name, input.skill, ""));
+  const fileName = fileBasename(filePath);
+  return {
+    skillName,
+    filePath,
+    fileName,
+    label: pick(fileName, skillName, "skill"),
+    detail: [skillName, filePath].filter(Boolean).join(" · ")
+  };
+}
+function observationTypePill(obs) {
+  return skillCallInfo(obs) ? typePill("skill") : typePill(obs?.observation_type);
+}
+function attrValue(source, keys = []) {
+  const attrs = typeof source === "string" ? parsePreviewJson(source) : source;
+  if (!attrs || typeof attrs !== "object") return "";
+  for (const key of keys) {
+    const value = attrs[key];
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return "";
+}
+function isLlmObservation(obs) {
+  const raw = [obs?.observation_type, obs?.kind, obs?.name, obs?.model_provider, obs?.model_name].filter(Boolean).join(" ").toLowerCase();
+  return raw.includes("llm") || Boolean(obs?.model_provider || obs?.model_name);
+}
+function llmDisplayName(obs) {
+  if (!isLlmObservation(obs)) return "";
+  const provider = String(pick(
+    obs?.model_provider,
+    attrValue(obs?.attributes, ["model_provider", "llm.provider", "gen_ai.system", "ai.model.provider"]),
+    ""
+  ));
+  const model = String(pick(
+    obs?.model_name,
+    attrValue(obs?.attributes, ["model_name", "llm.model_name", "gen_ai.request.model", "gen_ai.response.model", "model"]),
+    ""
+  ));
+  const modelText = provider && model ? `${provider} / ${model}` : pick(model, provider, obs?.name, "llm.call");
+  const tokens = asNumber(obs?.total_tokens);
+  return tokens > 0 ? `${modelText} · ${formatCompactNumber(tokens)} token` : modelText;
+}
+function observationDisplayName(obs, fallback = "span") {
+  const skill = skillCallInfo(obs);
+  if (skill) return skill.label;
+  const llm = llmDisplayName(obs);
+  if (llm) return llm;
+  if (String(obs?.observation_type || "").toLowerCase().includes("tool")) return pick(obs?.tool_name, obs?.name, obs?.span_id, fallback);
+  return pick(obs?.name, obs?.tool_name, obs?.span_id, fallback);
+}
 function oneLinePreview(...values) {
   const raw = pick(...values, "");
   if (!raw) return "";
@@ -1182,13 +1252,16 @@ function spanDepth(obs, byId, guard = new Set()) {
   return Math.min(6, 1 + spanDepth(byId.get(parentId), byId, guard));
 }
 function spanPreview(obs) {
-  return previewLine(obs.input_preview, obs.tool_input_preview, obs.output_preview, obs.tool_output_preview, pick(obs.name, obs.tool_name, "暂无预览"));
+  const skill = skillCallInfo(obs);
+  if (skill) return `${skill.label}${skill.detail ? ` · ${skill.detail}` : ""}`;
+  return previewLine(obs.input_preview, obs.tool_input_preview, obs.output_preview, obs.tool_output_preview, pick(obs.tool_name, obs.name, "暂无预览"));
 }
 function renderTraceSpanDetail(obs) {
   if (!obs) {
     return `<aside class="trace-span-detail empty-state"><div class="state-card"><strong>选择一个 Span</strong><p>点击左侧时间线查看输入、输出和 attributes。</p></div></aside>`;
   }
   const errored = statusClass(obs.status_code) === "error";
+  const skill = skillCallInfo(obs);
   return `
     <aside class="trace-span-detail">
       <div class="span-detail-head">
@@ -1207,6 +1280,7 @@ function renderTraceSpanDetail(obs) {
         ${summaryItem("parent", pick(obs.parent_span_id, "root"))}
         ${summaryItem("Token", formatNumber(obs.total_tokens))}
         ${summaryItem("模型/工具", modelOrTool(obs))}
+        ${skill ? summaryItem("skill", skill.label) : ""}
       </div>
       ${errored && obs.status_message ? `<p class="status-message">${escapeHtml(obs.status_message)}</p>` : ""}
       <div class="previews span-previews">
@@ -1255,8 +1329,8 @@ function renderTraceWaterfall(detail) {
                 <button class="waterfall-row ${selectedClass} ${errored ? "error" : ""}" type="button" data-trace-span-id="${escapeHtml(obs.span_id || String(obs.__index))}">
                   <span class="waterfall-label" style="padding-left:${depth * 16}px">
                     <span class="row-status-dot ${errored ? "error" : "ok"}" aria-hidden="true"></span>
-                    ${typePill(obs.observation_type)}
-                    <strong>${escapeHtml(pick(obs.name, obs.tool_name, obs.span_id, "span"))}</strong>
+                    ${observationTypePill(obs)}
+                    <strong>${escapeHtml(observationDisplayName(obs, "span"))}</strong>
                   </span>
                   <span class="waterfall-track">
                     <span class="waterfall-grid" aria-hidden="true"></span>
@@ -1311,7 +1385,7 @@ function renderSessionTraceTimeline(sessionId) {
               <span class="timeline-dot ${statusClass(trace.status_code) === "error" || errors ? "error" : "ok"}" aria-hidden="true"></span>
               <span class="timeline-main">
                 <span class="timeline-title">
-                  <strong>${escapeHtml(pick(trace.root_span_name, trace.agent_name, "未命名 Trace"))}</strong>
+                  <strong>${escapeHtml(pick(trace.root_span_name, "未命名 Trace"))}</strong>
                   <code>${escapeHtml(traceId)}</code>
                 </span>
                 <span class="timeline-preview">${escapeHtml(preview)}</span>
@@ -1363,7 +1437,7 @@ function renderSessions() {
         <span class="row-status-dot ${errors ? "error" : "ok"}" aria-hidden="true"></span>
         <span class="row-main">
           <span class="row-title">
-            <strong>${escapeHtml(pick(session.agent_name, "未知-agent"))}</strong>
+            <strong>${escapeHtml(pick(selectedAgentName(), "未知 Agent"))}</strong>
             <code>${escapeHtml(sessionId)}</code>
           </span>
           <span class="row-preview">${escapeHtml(preview)}</span>
@@ -1453,9 +1527,11 @@ function detailsBlock(label, value) {
   return `<details><summary>${escapeHtml(label)}</summary><pre>${escapeHtml(json)}</pre></details>`;
 }
 function modelOrTool(obs) {
+  const skill = skillCallInfo(obs);
+  if (skill) return skill.label;
   const model = [obs.model_provider, obs.model_name].filter(Boolean).join(" / ");
   if (model) return model;
-  if (obs.tool_name) return `tool: ${obs.tool_name}`;
+  if (obs.tool_name) return obs.tool_name;
   return pick(obs.kind, obs.source, "Span");
 }
 
@@ -1500,7 +1576,7 @@ function renderTraceDetail() {
       <div class="summary-grid">
         ${summaryItem("trace_id", pick(trace.trace_id, state.selectedTraceId))}
         ${summaryItem("session_id", pick(trace.session_id, state.selectedSessionId))}
-        ${summaryItem("agent", pick(trace.agent_name, "--"))}
+        ${summaryItem("agent", selectedAgentName())}
         ${summaryItem("开始时间", formatDateTime(trace.started_at))}
         ${summaryItem("错误", formatNumber(trace.error_count))}
         ${summaryItem("tokens", formatNumber(trace.total_tokens))}
@@ -1519,8 +1595,8 @@ function renderObservation(obs) {
       <div class="observation-card">
         <div class="observation-head">
           <div class="observation-name">
-            ${typePill(obs.observation_type)}
-            <strong>${escapeHtml(pick(obs.name, obs.span_id, "未命名观测"))}</strong>
+            ${observationTypePill(obs)}
+            <strong>${escapeHtml(observationDisplayName(obs, "未命名观测"))}</strong>
             <code class="id-text">span ${escapeHtml(obs.span_id || "--")}</code>
           </div>
           ${statusPill(obs.status_code)}
@@ -1585,7 +1661,7 @@ function renderTopSessions() {
         <span class="rank-badge">${index + 1}</span>
         <span class="top-rank-main">
           <span class="row-title">
-            <strong>${escapeHtml(pick(session.agent_name, "未知-agent"))}</strong>
+            <strong>${escapeHtml(pick(selectedAgentName(), "未知 Agent"))}</strong>
             <code>${escapeHtml(sessionId)}</code>
           </span>
           <span class="row-preview">${escapeHtml(preview)}</span>
@@ -1701,7 +1777,7 @@ function renderSessionPage() {
           <span class="rank-badge">${baseRank + index + 1}</span>
           <span class="top-rank-main">
             <span class="row-title">
-              <strong>${escapeHtml(pick(session.agent_name, "未知-agent"))}</strong>
+              <strong>${escapeHtml(pick(selectedAgentName(), "未知 Agent"))}</strong>
               <code>${escapeHtml(sessionId)}</code>
             </span>
             <span class="row-preview">${escapeHtml(preview)}</span>
@@ -1739,7 +1815,6 @@ function renderTracePage() {
       state.tracePagePage = 1;
       state.tracePageTraces = [];
       state.tracePageHasMore = false;
-      loadTracePage();
     }
   } else if (hash === 'traces' && state.tracePageQuery.trim()) {
     // User navigated to pure #traces, clear query
@@ -1833,7 +1908,7 @@ function renderTracePage() {
           <span class="rank-badge">${baseRank + index + 1}</span>
           <span class="top-rank-main">
             <span class="row-title">
-              <strong>${escapeHtml(pick(trace.root_span_name, trace.agent_name, "未知-trace"))}</strong>
+              <strong>${escapeHtml(pick(trace.root_span_name, "未知 Trace"))}</strong>
               <code>${escapeHtml(traceId)}</code>
             </span>
             <span class="row-preview">${escapeHtml(preview)}</span>
@@ -1852,12 +1927,6 @@ function renderTracePage() {
       </article>`;
   }).join("");
 
-  // If exactly one result from query, auto-expand it
-  if (traces.length === 1 && !state.selectedTraceId) {
-    state.selectedTraceId = traces[0].trace_id;
-    // Load span detail waterfall
-    selectTrace(state.selectedTraceId);
-  }
 }
 
 function renderTopTraces() {
@@ -1902,7 +1971,7 @@ function renderTopTraces() {
         <span class="rank-badge">${index + 1}</span>
         <span class="top-rank-main">
           <span class="row-title">
-            <strong>${escapeHtml(pick(trace.root_span_name, trace.agent_name, "未知-trace"))}</strong>
+            <strong>${escapeHtml(pick(trace.root_span_name, "未知 Trace"))}</strong>
             <code>${escapeHtml(traceId)}</code>
           </span>
           <span class="row-preview">${escapeHtml(preview)}</span>
@@ -2014,6 +2083,16 @@ async function loadTracePage() {
   } finally {
     state.loadingTracePage = false;
   }
+
+  const singleTrace = state.tracePageQuery.trim() && state.tracePageTraces.length === 1 ? state.tracePageTraces[0] : null;
+  const singleTraceId = singleTrace ? pick(singleTrace.trace_id, "") : "";
+  const detailAlreadyLoaded = singleTraceId && state.selectedTraceId === singleTraceId && state.selectedTraceDetail?.trace?.trace_id === singleTraceId;
+  const detailAlreadySelected = singleTraceId && state.selectedTraceId === singleTraceId && (state.selectedTraceDetail || state.loadingTraceDetail);
+  if (singleTraceId && !detailAlreadyLoaded && !detailAlreadySelected && !state.loadingTraceDetail) {
+    await selectTrace(singleTraceId);
+    return;
+  }
+
   renderAll();
 }
 
@@ -2035,7 +2114,7 @@ async function loadSessions({ silent = false } = {}) {
     state.bootstrapped = true;
   }
   const selectedStillExists = state.selectedSessionId && state.sessions.some((s) => s.session_id === state.selectedSessionId);
-  if (!selectedStillExists) {
+  if (state.selectedSessionId && !selectedStillExists) {
     state.selectedSessionId = null;
     state.selectedTraceId = null;
     state.selectedTraceDetail = null;
@@ -2140,24 +2219,27 @@ const INTEGRATIONS = {
   hermes: {
     name: "Hermes Agent",
     badge: "Token 部分支持/支持",
-    note: "Token 会自动从 LLM 调用结果中提取。prompt/output 默认只上传 preview，不上传全文。",
-    codeId: "code-hermes-agent",
-    code: (agent = selectedAgent()) => `cat > ~/.hermes/observability.yaml <<'YAML'
-enabled: true
-service_name: ${selectedAgentName()}
-agent_name: ${selectedAgentName()}
-endpoint: "${state.otlpEndpoint}"
-headers:
-  Authorization: "Bearer ${agentApiKeyValue(agent, { forCopy: true })}"
-capture_content: false
-preview_chars: 500
-YAML`,
-    restart: () => `# 如果 Hermes 运行在 gateway / WeChat 中
+    note: "Endpoint 和当前 Agent API Key 会自动填入下方命令。prompt/output 默认只上传 preview，不上传全文。",
+    codeId: "code-hermes-env",
+    code: (agent = selectedAgent()) => `# 查看所有 profile
+hermes profile list
+
+# 有 profile 的情况（把 <your-profile> 替换为实际 profile 名）：
+echo 'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${state.otlpEndpoint}' >> ~/.hermes/profiles/<your-profile>/.env
+echo 'OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer ${agentApiKeyValue(agent, { forCopy: true })}' >> ~/.hermes/profiles/<your-profile>/.env
+
+# 没有 profile 的情况（使用全局默认 .env）：
+echo 'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${state.otlpEndpoint}' >> ~/.hermes/.env
+echo 'OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer ${agentApiKeyValue(agent, { forCopy: true })}' >> ~/.hermes/.env`,
+    enable: () => `hermes plugins enable observability/opentelemetry`,
+    restart: () => `# 查看 Gateway 状态
+hermes gateway status
+
+# 情况一：Gateway 处于 running（微信语音等长驻场景）→ 需要重启
 hermes gateway restart
 
-# 如果是 CLI 会话，退出后重新启动 hermes
-# /quit
-# hermes`
+# 情况二：Gateway 处于 stopped（每次用 -Z 独立会话）→ 无需重启
+# 环境变量下次启动时自动生效，直接运行任务即可`
   },
   claude: {
     name: "Claude Code",
@@ -2207,20 +2289,35 @@ function renderIntegrationPanel() {
   const agent = selectedAgent();
   const codeId = config.codeId || `code-${key}-wrapper`;
   const code = config.code ? config.code(agent) : cliWrapperCode(config, agent);
+  const enableCodeId = `code-${key}-enable`;
   const restartCodeId = `code-${key}-restart`;
   const verifyCodeId = `code-${key}-verify`;
+  const enableCode = config.enable ? config.enable() : `# 安装或开启 ${config.name} 的 OpenTelemetry / tracing 支持`;
   const restartCode = config.restart ? config.restart() : `# 重新运行一次 ${config.name} 任务，让新的 OTEL 环境变量生效
 ${config.command || "your-agent-command \"your task\""}`;
   const verifyCode = `# 运行任务后回到 AgentOTel 控制台
 # 打开「总览 / 会话 / 任务」确认出现新的 Session、Trace 和 Span`;
+  const isHermes = key === "hermes";
   panel.innerHTML = `
     <div class="steps-grid">
       <article class="step-card">
         <div class="step-number">1</div>
         <div class="step-content">
-          <p class="eyebrow">配置</p>
-          <h3>修改配置</h3>
-          <p>当前选择：${escapeHtml(selectedAgentName())}。下面配置已填入该 Agent 的 API Key。</p>
+          <p class="eyebrow">开启</p>
+          <h3>${isHermes ? "开启 OTEL 插件" : "开启 telemetry"}</h3>
+          <p>${isHermes ? "先启用 Hermes Agent 的 OpenTelemetry 插件。" : `开启 ${escapeHtml(config.name)} 的 telemetry / tracing 支持。`}</p>
+          <div class="code-block">
+            <button class="copy-button" type="button" data-dynamic-copy-target="${escapeHtml(enableCodeId)}">复制</button>
+            <pre id="${escapeHtml(enableCodeId)}"><code>${escapeHtml(enableCode)}</code></pre>
+          </div>
+        </div>
+      </article>
+      <article class="step-card">
+        <div class="step-number">2</div>
+        <div class="step-content">
+          <p class="eyebrow">环境变量</p>
+          <h3>${isHermes ? "找到 Profile 并写入环境变量" : "写入 OTEL 环境变量"}</h3>
+          <p>当前选择：${escapeHtml(selectedAgentName())}。Endpoint 和当前 Agent API Key 已动态填入。</p>
           <div class="code-block">
             <button class="copy-button" type="button" data-dynamic-copy-target="${escapeHtml(codeId)}">复制</button>
             <pre id="${escapeHtml(codeId)}"><code>${escapeHtml(code)}</code></pre>
@@ -2228,11 +2325,11 @@ ${config.command || "your-agent-command \"your task\""}`;
         </div>
       </article>
       <article class="step-card">
-        <div class="step-number">2</div>
+        <div class="step-number">3</div>
         <div class="step-content">
-          <p class="eyebrow">重启</p>
-          <h3>重启 Agent / Gateway</h3>
-          <p>配置写入后需要重启，让 Agent 重新加载 OTEL 配置。</p>
+          <p class="eyebrow">Gateway</p>
+          <h3>${isHermes ? "按 Gateway 状态决定是否重启" : "重启 Agent / 重新运行任务"}</h3>
+          <p>${isHermes ? "Gateway running 时需要重启；stopped 时下次独立会话会自动加载环境变量。" : "配置写入后需要重启，让 Agent 重新加载 OTEL 配置。"}</p>
           <div class="code-block">
             <button class="copy-button" type="button" data-dynamic-copy-target="${escapeHtml(restartCodeId)}">复制</button>
             <pre id="${escapeHtml(restartCodeId)}"><code>${escapeHtml(restartCode)}</code></pre>
@@ -2240,7 +2337,7 @@ ${config.command || "your-agent-command \"your task\""}`;
         </div>
       </article>
       <article class="step-card">
-        <div class="step-number">3</div>
+        <div class="step-number">4</div>
         <div class="step-content">
           <p class="eyebrow">验证</p>
           <h3>运行一次任务并检查数据</h3>
@@ -2760,7 +2857,8 @@ async function bootstrapAuthenticatedApp() {
   setAuthenticatedShell(true);
   await Promise.all([loadCurrentUser(), loadProjects()]);
   renderAll();
-  await Promise.all([loadApiKeys(), loadAgents(), loadSessions({ silent: false })]);
+  await loadAgents();
+  await Promise.all([loadApiKeys(), loadSessions({ silent: false })]);
 }
 async function boot() {
   bindEvents();

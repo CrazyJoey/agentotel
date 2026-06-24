@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   environment LowCardinality(String) DEFAULT 'default',
   session_id String,
   user_id String DEFAULT '',
-  agent_name LowCardinality(String) DEFAULT '',
+  api_key_id String,
   started_at DateTime64(3, 'UTC'),
   ended_at DateTime64(3, 'UTC'),
   duration_ms UInt64 DEFAULT 0,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
 ) ENGINE = MergeTree
 PARTITION BY toDate(started_at)
-ORDER BY (project_id, environment, session_id);
+ORDER BY (project_id, environment, api_key_id, session_id);
 
 CREATE TABLE IF NOT EXISTS traces (
   project_id LowCardinality(String) DEFAULT 'default',
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS traces (
   trace_id String,
   session_id String DEFAULT '',
   root_span_name String DEFAULT '',
-  agent_name LowCardinality(String) DEFAULT '',
+  api_key_id String,
   started_at DateTime64(3, 'UTC'),
   ended_at DateTime64(3, 'UTC'),
   duration_ms UInt64 DEFAULT 0,
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS traces (
   updated_at DateTime64(3, 'UTC') DEFAULT now64(3)
 ) ENGINE = MergeTree
 PARTITION BY toDate(started_at)
-ORDER BY (project_id, environment, trace_id);
+ORDER BY (project_id, environment, api_key_id, trace_id);
 
 CREATE TABLE IF NOT EXISTS observations (
   project_id LowCardinality(String) DEFAULT 'default',
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS observations (
   duration_ms UInt64 DEFAULT 0,
   status_code LowCardinality(String) DEFAULT 'UNSET',
   status_message String DEFAULT '',
-  agent_name LowCardinality(String) DEFAULT '',
+  api_key_id String,
   model_provider LowCardinality(String) DEFAULT '',
   model_name LowCardinality(String) DEFAULT '',
   input_tokens UInt32 DEFAULT 0,
@@ -82,4 +82,4 @@ CREATE TABLE IF NOT EXISTS observations (
   ingested_at DateTime64(3, 'UTC') DEFAULT now64(3)
 ) ENGINE = MergeTree
 PARTITION BY toDate(started_at)
-ORDER BY (project_id, environment, trace_id, started_at, span_id);
+ORDER BY (project_id, environment, api_key_id, trace_id, started_at, span_id);
