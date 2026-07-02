@@ -562,10 +562,29 @@ def send_aliyun_sms_code(phone_number: str, code: str, purpose: str = "login") -
         "Timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "Version": "2017-05-25",
     }
-    canonical = "&".join(f"{aliyun_percent_encode(k)}={aliyun_percent_encode(str(params[k]))}" for k in sorted(params))
-    string_to_sign = "GET&%2F&" + aliyun_percent_encode(canonical)
+    
+    # Correct aliyun signature process according to official documentation:
+    # https://help.aliyun.com/document_detail/101367.html
+    # 1. Sort all request parameters lexicographically by parameter name
+    # 2. Concatenate as parameterName=parameterValue&parameterName=parameterValue to get the CanonicalizedQueryString
+    # 3. Percent-encode the entire CanonicalizedQueryString
+    # 4. The string to sign is: HTTP_METHOD + "&" + percentEncode("/") + "&" + percentEncode(CanonicalizedQueryString)
+    
+    sorted_keys = sorted(params.keys())
+    # Step 2: percent-encode each key and value first, then join
+    #         (Aliyun spec requires k/v encoded pairs, then the whole string encoded again)
+    raw_pairs = []
+    for k in sorted_keys:
+        raw_pairs.append(f"{aliyun_percent_encode(k)}={aliyun_percent_encode(str(params[k]))}")
+    canonical_query_string_raw = "&".join(raw_pairs)
+    # Step 3: percent-encode the entire canonical query string (double-encoding)
+    canonical_query_string = aliyun_percent_encode(canonical_query_string_raw)
+    string_to_sign = f"GET&{aliyun_percent_encode('/')}&{canonical_query_string}"
+    
     digest = hmac.new((ALIYUN_SMS_ACCESS_KEY_SECRET + "&").encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1).digest()
-    params["Signature"] = base64.b64encode(digest).decode("ascii")
+    signature = base64.b64encode(digest).decode("ascii")
+    # Final request: need to urlencode all parameters again (standard urllib encode)
+    params["Signature"] = signature
     query = urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(ALIYUN_SMS_ENDPOINT + "?" + query, timeout=10) as resp:
