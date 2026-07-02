@@ -15,6 +15,7 @@ build/
 .env.*
 *.local
 *.secret
+docs/SECRETS.md
 
 # Runtime logs / pid files
 *.log
