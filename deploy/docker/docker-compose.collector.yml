@@ -1,0 +1,25 @@
+# AgentOTel prod — collector-only compose file.
+# Backend + front run on systemd/nginx natively; only the collector uses Docker for now.
+# Runs the OpenTelemetry Collector on host network so it can reach backend at 127.0.0.1:8091
+# and expose OTLP ports 4317/4318 directly.
+#
+# Usage:
+#   cd ~/agentotel
+#   docker compose -f deploy/docker/docker-compose.collector.yml up -d
+#   docker compose -f deploy/docker/docker-compose.collector.yml logs -f collector
+#   docker compose -f deploy/docker/docker-compose.collector.yml down
+#
+# Requires env in ~/agentotel/.env:
+#   AGENTOTEL_API_KEY=<token forwarded to backend as Bearer>
+
+services:
+  collector:
+    image: docker.m.daocloud.io/otel/opentelemetry-collector:latest
+    container_name: agentotel-collector
+    network_mode: host
+    environment:
+      AGENTOTEL_API_KEY: ${AGENTOTEL_API_KEY:?set AGENTOTEL_API_KEY}
+    volumes:
+      - /home/admin/agentotel/deploy/docker/otel-collector-config.prod.yaml:/etc/otelcol/config.yaml:ro
+    command: ["--config=/etc/otelcol/config.yaml"]
+    restart: unless-stopped

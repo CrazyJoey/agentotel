@@ -1,0 +1,34 @@
+# OpenTelemetry Collector config — PROD (host network mode)
+# - Receives OTLP on host :4317 (gRPC) and :4318 (HTTP)
+# - Forwards traces to backend at 127.0.0.1:8091 (systemd process on same host)
+# - Backend authenticates via Authorization: Bearer <AGENTOTEL_API_KEY>
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: normal
+  otlp_http/backend:
+    traces_endpoint: http://127.0.0.1:8091/v1/traces
+    encoding: json
+    compression: none
+    headers:
+      Authorization: "Bearer ${env:AGENTOTEL_API_KEY}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug, otlp_http/backend]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      exporters: [debug]

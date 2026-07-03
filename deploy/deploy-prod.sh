@@ -74,9 +74,11 @@ fi
 echo "==> [5/7] reload nginx + restart services"
 sudo systemctl reload nginx || sudo systemctl restart nginx
 sudo systemctl restart agentotel-backend
-# Collector managed separately by Simon; only restart if already installed and active.
-if systemctl list-unit-files agentotel-collector.service | grep -q agentotel-collector; then
-  sudo systemctl restart agentotel-collector || echo "    (collector restart failed, continuing)"
+# Collector runs in a docker container (see deploy/docker/docker-compose.collector.yml).
+# Auto-start if compose file exists AND docker is available. Idempotent — `up -d` re-creates only on change.
+COLLECTOR_COMPOSE="$REPO/deploy/docker/docker-compose.collector.yml"
+if [[ -f "$COLLECTOR_COMPOSE" ]] && command -v docker >/dev/null 2>&1; then
+  ( cd "$REPO" && docker compose -f "$COLLECTOR_COMPOSE" --env-file "$REPO/.env" up -d 2>&1 | tail -3 ) || echo "    (collector compose failed, continuing)"
 fi
 sleep 2
 
