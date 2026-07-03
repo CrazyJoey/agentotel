@@ -42,15 +42,23 @@ fi
 "$VENV/bin/pip" install --upgrade pip --quiet
 "$VENV/bin/pip" install -r "$REPO/server/backend-api/requirements.txt" --quiet
 
-echo "==> [3/7] systemd unit"
-if ! sudo -n cmp -s "$REPO/deploy/systemd/agentotel-backend.service" "$SYSTEMD_UNIT" 2>/dev/null; then
-  sudo cp "$REPO/deploy/systemd/agentotel-backend.service" "$SYSTEMD_UNIT"
-  sudo systemctl daemon-reload
-  sudo systemctl enable agentotel-backend.service
-  echo "    unit refreshed"
-else
-  echo "    unit unchanged"
-fi
+echo "==> [3/7] systemd units"
+# Ensure nginx can traverse into /home/admin to reach front/ (nginx runs as user 'nginx').
+# `o+x` on $HOME only allows path traversal, NOT directory listing — safe for a single-admin box.
+sudo chmod o+x "$HOME"
+
+for unit_src in "$REPO"/deploy/systemd/*.service; do
+  unit_name="$(basename "$unit_src")"
+  unit_dst="/etc/systemd/system/$unit_name"
+  if ! sudo -n cmp -s "$unit_src" "$unit_dst" 2>/dev/null; then
+    sudo cp "$unit_src" "$unit_dst"
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$unit_name"
+    echo "    $unit_name refreshed + enabled"
+  else
+    echo "    $unit_name unchanged"
+  fi
+done
 
 echo "==> [4/7] nginx site"
 if ! sudo -n cmp -s "$REPO/deploy/nginx/agentotel.conf" "$NGINX_SITE" 2>/dev/null; then
@@ -61,9 +69,13 @@ else
   echo "    nginx conf unchanged"
 fi
 
-echo "==> [5/7] reload nginx + restart backend"
+echo "==> [5/7] reload nginx + restart services"
 sudo systemctl reload nginx || sudo systemctl restart nginx
-sudo systemctl restart agentotel-backend
+for unit_src in "$REPO"/deploy/systemd/*.service; do
+  unit_name="$(basename "$unit_src")"
+  sudo systemctl restart "$unit_name"
+  echo "    restarted $unit_name"
+done
 sleep 2
 
 echo "==> [6/7] smoke test"
