@@ -30,8 +30,14 @@ git pull --ff-only origin "$BRANCH"
 COMMIT="$(git rev-parse --short HEAD)"
 
 echo "==> [2/7] venv + pip"
+# Python 3.11 required — 3.6 (system default on alinux3) fails on `from __future__ import annotations` + cryptography build deps.
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "!! $PYTHON_BIN not found. Install with: sudo dnf install -y python3.11 python3.11-pip"
+  exit 1
+fi
 if [[ ! -d "$VENV" ]]; then
-  python3 -m venv "$VENV"
+  "$PYTHON_BIN" -m venv "$VENV"
 fi
 "$VENV/bin/pip" install --upgrade pip --quiet
 "$VENV/bin/pip" install -r "$REPO/server/backend-api/requirements.txt" --quiet
