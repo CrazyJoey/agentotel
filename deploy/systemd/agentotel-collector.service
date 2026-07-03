@@ -8,23 +8,26 @@ After=network-online.target
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=/home/admin/workspace/agentotel
-ExecStart=/home/admin/workspace/agentotel/bin/agentotel-collector --config /home/admin/workspace/agentotel/opentelemetry-collector/config/agentotel-local.yaml
+# %h expands to admin's home. Works on:
+#   dev  = /home/admin/workspace/agentotel  (symlink /home/admin/agentotel -> workspace/agentotel, or use dev-only unit override)
+#   prod = /home/admin/agentotel
+# See docs/OPERATIONS.md for env layout.
+WorkingDirectory=%h/agentotel
+EnvironmentFile=-%h/agentotel/.env
+ExecStart=%h/agentotel/bin/agentotel-collector --config %h/agentotel/opentelemetry-collector/config/agentotel-local.yaml
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM
 TimeoutStopSec=30
 LimitNOFILE=65536
 
-# Keep runtime deterministic and avoid leaking secrets into the unit.
 Environment=GOMEMLIMIT=512MiB
 Environment=GOPROXY=https://goproxy.cn,direct
 
-# Basic hardening. Keep write access to workspace for logs/temp if needed by future components.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/home/admin/workspace/agentotel
+ReadWritePaths=%h/agentotel
 
 [Install]
 WantedBy=multi-user.target

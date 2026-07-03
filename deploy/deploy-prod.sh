@@ -43,12 +43,14 @@ fi
 "$VENV/bin/pip" install -r "$REPO/server/backend-api/requirements.txt" --quiet
 
 echo "==> [3/7] systemd units"
-# Ensure nginx can traverse into /home/admin to reach front/ (nginx runs as user 'nginx').
+# Ensure nginx can traverse into $HOME to reach front/ (nginx runs as user 'nginx').
 # `o+x` on $HOME only allows path traversal, NOT directory listing — safe for a single-admin box.
 sudo chmod o+x "$HOME"
 
-for unit_src in "$REPO"/deploy/systemd/*.service; do
-  unit_name="$(basename "$unit_src")"
+# Install/refresh backend unit. Collector unit is intentionally NOT auto-installed here —
+# it needs a Go-built binary (bin/agentotel-collector) that's not in the repo. Simon owns that.
+for unit_name in agentotel-backend.service; do
+  unit_src="$REPO/deploy/systemd/$unit_name"
   unit_dst="/etc/systemd/system/$unit_name"
   if ! sudo -n cmp -s "$unit_src" "$unit_dst" 2>/dev/null; then
     sudo cp "$unit_src" "$unit_dst"
@@ -71,11 +73,11 @@ fi
 
 echo "==> [5/7] reload nginx + restart services"
 sudo systemctl reload nginx || sudo systemctl restart nginx
-for unit_src in "$REPO"/deploy/systemd/*.service; do
-  unit_name="$(basename "$unit_src")"
-  sudo systemctl restart "$unit_name"
-  echo "    restarted $unit_name"
-done
+sudo systemctl restart agentotel-backend
+# Collector managed separately by Simon; only restart if already installed and active.
+if systemctl list-unit-files agentotel-collector.service | grep -q agentotel-collector; then
+  sudo systemctl restart agentotel-collector || echo "    (collector restart failed, continuing)"
+fi
 sleep 2
 
 echo "==> [6/7] smoke test"
