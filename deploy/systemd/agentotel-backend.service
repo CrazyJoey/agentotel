@@ -1,0 +1,25 @@
+[Unit]
+Description=AgentOTel Backend API (stdlib http.server on venv)
+Documentation=https://github.com/CrazyJoey/agentotel
+After=network-online.target mysqld.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/agentotel/server/backend-api
+EnvironmentFile=/home/admin/agentotel/.env
+ExecStart=/home/admin/agentotel/.venv/bin/python /home/admin/agentotel/server/backend-api/backend_api.py --host ${HOST} --port ${PORT}
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agentotel-backend
+
+# Hardening (mild — backend needs network + read repo)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,8 @@ build/
 # Local env / secrets
 .env
 .env.*
+!.env.dev.example
+!.env.prod.example
 *.local
 *.secret
 docs/SECRETS.md

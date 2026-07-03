@@ -9,7 +9,21 @@
 
 ## [Unreleased]
 
-（下一版预计包含的改动，合入后移到正式版本）
+### Added
+- **Deploy model pivot: prod 弃 docker，改用 systemd 原生进程 + 系统 nginx**
+  - `deploy/systemd/agentotel-backend.service` — backend 走 venv (`~/agentotel/.venv`)
+  - `deploy/nginx/agentotel.conf` — 系统 nginx 站点配置（listen 8088，反代 8091）
+  - `deploy/deploy-prod.sh` — 幂等发布脚本：git pull → venv install → 拷 unit/nginx → reload → 冒烟 → version.txt
+- **配置文件区分环境**：`.env.dev.example`（docker-compose）+ `.env.prod.example`（系统进程）
+- **ClickHouse 明确为外部实例** `121.43.27.45:8123`，不再本地部署
+
+### Changed
+- `docs/OPERATIONS.md` — 全量重写，反映 dev=docker / prod=systemd 双形态；Step 5b 从 "build+push image" 改为 `bash deploy/deploy-prod.sh`
+- Dev 仍保留 docker-compose 用于隔离，无变化
+
+### Removed
+- Prod 的 `agentotel-clickhouse` 容器（迁到外部实例）
+- Prod 的 docker image build + save + scp + load 流程
 
 ---
 
